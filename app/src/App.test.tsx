@@ -467,8 +467,54 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: /station\.png/ }))
 
     expect(inspectorTitle()).toBe('station.png')
-    expect(screen.getByRole('button', { name: /station\.png/ })).toHaveClass('selected')
+    expect(screen.getByRole('button', { name: /station\.png/ })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByText('Pictures / trip')).toBeInTheDocument()
     expect(screen.getByText(/^PNG ·/)).toBeInTheDocument()
+  })
+
+  describe('狭い画面', () => {
+    it('メニューを開き、表示範囲を選ぶか閉じるボタンや Esc キーで閉じる', async () => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const { user, container } = await setup(memory.source)
+      await openFolder(user)
+      const menuButton = screen.getByRole('button', { name: 'メニューを開く' })
+      /**
+       * サイドバーを開いているか調べる。
+       * @returns 開いていれば `'true'`
+       */
+      const sidebarOpen = () => container.querySelector('aside')?.dataset.open
+
+      expect(sidebarOpen()).toBe('false')
+      await user.click(menuButton)
+      expect(sidebarOpen()).toBe('true')
+      expect(menuButton).toHaveAttribute('aria-expanded', 'true')
+      await user.click(within(nav()).getByRole('button', { name: /再接続が必要/ }))
+      expect(sidebarOpen()).toBe('false')
+
+      await user.click(menuButton)
+      await user.click(screen.getByRole('button', { name: 'メニューを閉じる' }))
+      expect(sidebarOpen()).toBe('false')
+
+      await user.click(menuButton)
+      await user.keyboard('{Escape}')
+      expect(sidebarOpen()).toBe('false')
+    })
+
+    it('写真を選ぶと詳細表示を開き、閉じるボタンで閉じる', async () => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const { user, inspectorTitle } = await setup(memory.source)
+      await openFolder(user)
+      const inspector = screen.getByRole('complementary', { name: '写真の詳細' })
+
+      expect(inspector).toHaveAttribute('data-open', 'false')
+      await user.click(screen.getByRole('button', { name: /station\.png/ }))
+      expect(inspector).toHaveAttribute('data-open', 'true')
+      expect(inspectorTitle()).toBe('station.png')
+
+      await user.click(within(inspector).getByRole('button', { name: '詳細を閉じる' }))
+      expect(inspector).toHaveAttribute('data-open', 'false')
+    })
   })
 })
