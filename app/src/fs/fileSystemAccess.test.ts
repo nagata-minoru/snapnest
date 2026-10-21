@@ -41,12 +41,14 @@ const directoryHandle = (name: string, entries: Array<FakeDirectory | FakeFile>)
   const handle: FakeDirectory = {
     kind: 'directory',
     name,
+
     /**
      * 同じハンドルか調べる。
      * @param other 比較するハンドル
      * @returns 同じハンドルなら `true`
      */
     isSameEntry: async (other) => other === handle,
+
     /**
      * 中のファイルとディレクトリを順に返す。
      * @returns ファイルとディレクトリを返す非同期ジェネレーター
