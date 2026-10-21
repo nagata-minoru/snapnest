@@ -10,40 +10,31 @@ type Photo = {
   tone: string
 }
 
-const photos: Photo[] = [
-  {
-    id: 1, title: '朝の余白', date: '2026年10月18日', location: '鎌倉',
-    tags: ['散歩', '海'], kind: 'shore', tone: 'a',
-  },
-  {
-    id: 2, title: '窓辺', date: '2026年10月16日', location: '自宅',
-    tags: ['日常'], kind: 'window', tone: 'b',
-  },
-  {
-    id: 3, title: '夕方の駅', date: '2026年10月14日', location: '横浜',
-    tags: ['街'], kind: 'station', tone: 'c',
-  },
-  {
-    id: 4, title: '初秋', date: '2026年10月11日', location: '代々木公園',
-    tags: ['散歩', '植物'], kind: 'leaf', tone: 'd',
-  },
-  {
-    id: 5, title: '青い椅子', date: '2026年10月8日', location: '清澄白河',
-    tags: ['街'], kind: 'chair', tone: 'e',
-  },
-  {
-    id: 6, title: 'コーヒーの湯気', date: '2026年10月6日', location: '自宅',
-    tags: ['日常'], kind: 'coffee', tone: 'f',
-  },
-  {
-    id: 7, title: '帰り道', date: '2026年10月3日', location: '鎌倉',
-    tags: ['海', '散歩'], kind: 'road', tone: 'g',
-  },
-  {
-    id: 8, title: '光の層', date: '2026年9月28日', location: '東京',
-    tags: ['街'], kind: 'light', tone: 'h',
-  },
-]
+const photos: Photo[] = [{
+  id: 1, title: '朝の余白', date: '2026年10月18日', location: '鎌倉',
+  tags: ['散歩', '海'], kind: 'shore', tone: 'a',
+}, {
+  id: 2, title: '窓辺', date: '2026年10月16日', location: '自宅',
+  tags: ['日常'], kind: 'window', tone: 'b',
+}, {
+  id: 3, title: '夕方の駅', date: '2026年10月14日', location: '横浜',
+  tags: ['街'], kind: 'station', tone: 'c',
+}, {
+  id: 4, title: '初秋', date: '2026年10月11日', location: '代々木公園',
+  tags: ['散歩', '植物'], kind: 'leaf', tone: 'd',
+}, {
+  id: 5, title: '青い椅子', date: '2026年10月8日', location: '清澄白河',
+  tags: ['街'], kind: 'chair', tone: 'e',
+}, {
+  id: 6, title: 'コーヒーの湯気', date: '2026年10月6日', location: '自宅',
+  tags: ['日常'], kind: 'coffee', tone: 'f',
+}, {
+  id: 7, title: '帰り道', date: '2026年10月3日', location: '鎌倉',
+  tags: ['海', '散歩'], kind: 'road', tone: 'g',
+}, {
+  id: 8, title: '光の層', date: '2026年9月28日', location: '東京',
+  tags: ['街'], kind: 'light', tone: 'h',
+}]
 
 const collections: Array<[string, number]> = [
   ['お気に入り', 18],
