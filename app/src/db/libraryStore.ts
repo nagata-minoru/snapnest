@@ -295,8 +295,10 @@ const upgrade = (db: IDBPDatabase<LibrarySchema>, oldVersion: number) => {
     const photos = db.createObjectStore('photos', { keyPath: 'id' })
     photos.createIndex('byFolder', 'folderId')
   }
+
   // バージョン 2 でサムネイルのキャッシュを追加した。既存のフォルダと写真はそのまま使える
   if (oldVersion < 2) db.createObjectStore('thumbnails', { keyPath: 'photoId' })
+
   // バージョン 3 でコレクションを追加した。所属は写真を複製せず、コレクションと写真の ID の組で持つ
   if (oldVersion < 3) {
     db.createObjectStore('collections', { keyPath: 'id' })
