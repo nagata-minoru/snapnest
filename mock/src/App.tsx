@@ -72,12 +72,17 @@ export function App() {
   const visiblePhotos = useMemo(() => {
     const normalized = query.trim().toLowerCase()
     return photos.filter((photo) => {
-      const matchesQuery = !normalized
-        || [photo.title, photo.location, ...photo.tags].join(' ').toLowerCase().includes(normalized)
-      const matchesCollection = activeCollection === 'すべての写真'
-        || photo.tags.includes(activeCollection)
-        || (activeCollection === 'お気に入り' && photo.id < 5)
-        || (activeCollection === '2026 秋' && photo.id < 7)
+      const matchesQuery = (
+        !normalized || [photo.title, photo.location, ...photo.tags].join(' ').toLowerCase().includes(normalized)
+      )
+
+      const matchesCollection = (
+        activeCollection === 'すべての写真' ||
+        photo.tags.includes(activeCollection) ||
+        (activeCollection === 'お気に入り' && photo.id < 5) ||
+        (activeCollection === '2026 秋' && photo.id < 7)
+      )
+
       return matchesQuery && matchesCollection
     })
   }, [activeCollection, query])
