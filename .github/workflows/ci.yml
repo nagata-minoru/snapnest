@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# 同じブランチで新しい実行が始まったら、古い実行は取り消す。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.directory }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # app は本体、mock は開発用モック。どちらも独立した Yarn プロジェクト。
+        directory: [app, mock]
+    defaults:
+      run:
+        working-directory: ${{ matrix.directory }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # package.json の packageManager で指定した Yarn を使うため、setup-node のキャッシュより先に有効にする。
+      - run: corepack enable
+        working-directory: .
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: yarn
+          cache-dependency-path: ${{ matrix.directory }}/yarn.lock
+
+      - run: yarn install --immutable
+      - run: yarn test
+      # build は tsc による型チェックを含む。
+      - run: yarn build
