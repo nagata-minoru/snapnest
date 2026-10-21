@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import type { FolderRecord, PhotoRecord, ThumbnailCache } from '../db/libraryStore'
+import type { CollectionRecord, FolderRecord, PhotoRecord, ThumbnailCache } from '../db/libraryStore'
 import type { PhotoSource, UnavailableReason } from '../fs/photoSource'
 import { formatBytes, formatDate, formatDirectory, formatKind } from '../library/format'
 import { PhotoImageView } from './PhotoCard'
+import { PhotoCollections } from './PhotoCollections'
 import { noThumbnail } from '../thumbnails/thumbnailMaker'
 import { usePhotoUrl, useThumbnailUrl } from './usePhotoUrl'
 
@@ -50,10 +51,16 @@ const LocationStatus = ({ photo, accessible }: { photo: PhotoRecord; accessible:
  * @param props.onUnavailable 原本を読めなかったときに呼ばれる
  * @param props.onRequestAccess アクセスの許可を求めるときに呼ばれる
  * @param props.onRescan フォルダを読み込み直すときに呼ばれる
+ * @param props.collections すべてのコレクション。表示する順に並べる
+ * @param props.memberOf 写真が入っているコレクションの ID
+ * @param props.onAddToCollection 写真をコレクションに入れるときに呼ばれる
+ * @param props.onRemoveFromCollection 写真をコレクションから外すときに呼ばれる
+ * @param props.onCreateCollection 新しいコレクションを作るときに呼ばれる
  * @returns 詳細表示の React 要素
  */
 export const Inspector = ({
   source, thumbnails, photo, folder, accessible, scanning, onUnavailable, onRequestAccess, onRescan,
+  collections, memberOf, onAddToCollection, onRemoveFromCollection, onCreateCollection,
 }: {
   source: PhotoSource
   thumbnails: ThumbnailCache
@@ -64,6 +71,11 @@ export const Inspector = ({
   onUnavailable: (photoId: string, reason: UnavailableReason) => void
   onRequestAccess: (folderId: string) => void
   onRescan: (folderId: string) => void
+  collections: readonly CollectionRecord[]
+  memberOf: ReadonlySet<string>
+  onAddToCollection: (collectionId: string, photoId: string) => Promise<void>
+  onRemoveFromCollection: (collectionId: string, photoId: string) => Promise<void>
+  onCreateCollection: (name: string) => Promise<CollectionRecord | null>
 }) => {
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null)
   const readable = accessible && photo.status === 'available'
@@ -108,6 +120,16 @@ export const Inspector = ({
       {folder && photo.status !== 'missing' && !accessible && (
         <button className={action} onClick={() => onRequestAccess(folder.id)}>アクセスを許可</button>
       )}
+    </section>
+    <section className={section}>
+      <p className={sectionLabel}>コレクション</p>
+      <PhotoCollections
+        collections={collections}
+        memberOf={memberOf}
+        onAdd={(collectionId) => onAddToCollection(collectionId, photo.id)}
+        onRemove={(collectionId) => onRemoveFromCollection(collectionId, photo.id)}
+        onCreate={onCreateCollection}
+      />
     </section>
     <section className={section}>
       <p className={sectionLabel}>詳細</p>
