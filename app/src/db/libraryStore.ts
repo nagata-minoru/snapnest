@@ -2,7 +2,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { FileRef, FolderRef } from '../fs/photoSource'
 
 export const DB_NAME = 'snapnest'
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 /** 登録済みフォルダ。写真の原本ではなく、フォルダへの参照だけを持つ。 */
 export type FolderRecord = {
@@ -50,16 +50,39 @@ export type ThumbnailRecord = {
   createdAt: number
 }
 
+/** 写真をまとめるコレクション。写真そのものは持たず、所属は {@link MembershipRecord} で表す。 */
+export type CollectionRecord = {
+  id: string
+  name: string
+  createdAt: number
+  updatedAt: number
+}
+
+/** 写真がコレクションに所属していること。1 枚の写真は複数のコレクションに所属できる。 */
+export type MembershipRecord = {
+  collectionId: string
+  photoId: string
+  addedAt: number
+}
+
 interface LibrarySchema extends DBSchema {
   folders: { key: string; value: FolderRecord }
   photos: { key: string; value: PhotoRecord; indexes: { byFolder: string } }
   thumbnails: { key: string; value: ThumbnailRecord }
+  collections: { key: string; value: CollectionRecord }
+  memberships: {
+    key: [string, string]
+    value: MembershipRecord
+    indexes: { byCollection: string; byPhoto: string }
+  }
 }
 
 /** IndexedDB から読み込んだライブラリの内容。 */
 export type LibrarySnapshot = {
   folders: FolderRecord[]
   photos: PhotoRecord[]
+  collections: CollectionRecord[]
+  memberships: MembershipRecord[]
   /** 壊れていて読み飛ばしたレコードの数 */
   skipped: number
 }
@@ -67,7 +90,7 @@ export type LibrarySnapshot = {
 /** ライブラリのメタデータを保存する場所。 */
 export interface LibraryStore {
   /**
-   * 保存済みのフォルダと写真をすべて読み込む。壊れたレコードは読み飛ばす。
+   * 保存済みのフォルダ、写真、コレクションと所属をすべて読み込む。壊れたレコードは読み飛ばす。
    * @returns 読み込んだ内容
    */
   load(): Promise<LibrarySnapshot>
@@ -96,6 +119,31 @@ export interface LibraryStore {
    * @param thumbnail 保存するサムネイル
    */
   putThumbnail(thumbnail: ThumbnailRecord): Promise<void>
+
+  /**
+   * コレクションを保存する。同じ ID があれば置き換える。
+   * @param collection 保存するコレクション
+   */
+  putCollection(collection: CollectionRecord): Promise<void>
+
+  /**
+   * コレクションと、そこへの所属をまとめて削除する。写真は削除しない。
+   * @param collectionId 削除するコレクションの ID
+   */
+  deleteCollection(collectionId: string): Promise<void>
+
+  /**
+   * 写真をコレクションに所属させる。所属済みなら置き換える。
+   * @param membership 保存する所属
+   */
+  putMembership(membership: MembershipRecord): Promise<void>
+
+  /**
+   * 写真をコレクションから外す。所属していなければ何もしない。
+   * @param collectionId コレクションの ID
+   * @param photoId 写真の ID
+   */
+  deleteMembership(collectionId: string, photoId: string): Promise<void>
 
   /** データベースとの接続を閉じる。 */
   close(): void
@@ -170,6 +218,73 @@ export const parseThumbnailRecord = (value: unknown): ThumbnailRecord | null => 
 }
 
 /**
+ * IndexedDB から読んだ値をコレクションとして検証する。
+ * @param value 読んだ値
+ * @returns コレクション。形が合わなければ `null`
+ */
+export const parseCollectionRecord = (value: unknown): CollectionRecord | null => {
+  if (!isObject(value)) return null
+  const { id, name, createdAt, updatedAt } = value
+  if (
+    typeof id !== 'string' || typeof name !== 'string' || !isFiniteNumber(createdAt) || !isFiniteNumber(updatedAt)
+  ) return null
+  return { id, name, createdAt, updatedAt }
+}
+
+/**
+ * IndexedDB から読んだ値を所属として検証する。
+ * @param value 読んだ値
+ * @returns 所属。形が合わなければ `null`
+ */
+export const parseMembershipRecord = (value: unknown): MembershipRecord | null => {
+  if (!isObject(value)) return null
+  const { collectionId, photoId, addedAt } = value
+  if (typeof collectionId !== 'string' || typeof photoId !== 'string' || !isFiniteNumber(addedAt)) return null
+  return { collectionId, photoId, addedAt }
+}
+
+/**
+ * 読み込んだ値を検証し、壊れたものを除く。
+ * @param values 読み込んだ値
+ * @param parse 1 件を検証する関数
+ * @returns 正しいレコードと、除いた数
+ */
+const parseAll = <T>(values: unknown[], parse: (value: unknown) => T | null) => {
+  const records = values.map(parse).filter((record) => record !== null)
+  return { records, skipped: values.length - records.length }
+}
+
+/**
+ * フォルダと写真の検証結果に、コレクションと所属の検証結果を合わせる。
+ * 登録されていないフォルダの写真は、壊れたものとして除く。
+ * 削除されたコレクションへの所属は、削除の途中で残ったものとして、壊れたものとは数えずに除く。
+ * @param raw 各ストアから読み込んだ値
+ * @returns 読み込んだ内容
+ */
+const toSnapshot = (raw: {
+  folders: unknown[]
+  photos: unknown[]
+  collections: unknown[]
+  memberships: unknown[]
+}): LibrarySnapshot => {
+  const folders = parseAll(raw.folders, parseFolderRecord)
+  const folderIds = new Set(folders.records.map((folder) => folder.id))
+  const photos = raw.photos
+    .map(parsePhotoRecord)
+    .filter((photo): photo is PhotoRecord => photo !== null && folderIds.has(photo.folderId))
+  const collections = parseAll(raw.collections, parseCollectionRecord)
+  const collectionIds = new Set(collections.records.map((collection) => collection.id))
+  const memberships = parseAll(raw.memberships, parseMembershipRecord)
+  return {
+    folders: folders.records,
+    photos,
+    collections: collections.records,
+    memberships: memberships.records.filter((membership) => collectionIds.has(membership.collectionId)),
+    skipped: folders.skipped + raw.photos.length - photos.length + collections.skipped + memberships.skipped,
+  }
+}
+
+/**
  * データベースのスキーマを作成・移行する。
  * @param db 開いているデータベース
  * @param oldVersion 移行前のバージョン。新規作成なら `0`
@@ -182,6 +297,13 @@ const upgrade = (db: IDBPDatabase<LibrarySchema>, oldVersion: number) => {
   }
   // バージョン 2 でサムネイルのキャッシュを追加した。既存のフォルダと写真はそのまま使える
   if (oldVersion < 2) db.createObjectStore('thumbnails', { keyPath: 'photoId' })
+  // バージョン 3 でコレクションを追加した。所属は写真を複製せず、コレクションと写真の ID の組で持つ
+  if (oldVersion < 3) {
+    db.createObjectStore('collections', { keyPath: 'id' })
+    const memberships = db.createObjectStore('memberships', { keyPath: ['collectionId', 'photoId'] })
+    memberships.createIndex('byCollection', 'collectionId')
+    memberships.createIndex('byPhoto', 'photoId')
+  }
 }
 
 /**
@@ -193,12 +315,29 @@ export const createMemoryLibraryStore = (): LibraryStore => {
   const folders = new Map<string, FolderRecord>()
   const photos = new Map<string, PhotoRecord>()
   const thumbnails = new Map<string, ThumbnailRecord>()
+  const collections = new Map<string, CollectionRecord>()
+  const memberships = new Map<string, MembershipRecord>()
+
+  /**
+   * 所属を保存するときのキーを作る。
+   * @param collectionId コレクションの ID
+   * @param photoId 写真の ID
+   * @returns キー
+   */
+  const membershipKey = (collectionId: string, photoId: string) => JSON.stringify([collectionId, photoId])
+
   return {
     /**
-     * 保存済みのフォルダと写真をすべて返す。
+     * 保存済みの内容をすべて返す。
      * @returns 保存済みの内容
      */
-    load: async () => ({ folders: [...folders.values()], photos: [...photos.values()], skipped: 0 }),
+    load: async () => ({
+      folders: [...folders.values()],
+      photos: [...photos.values()],
+      collections: [...collections.values()],
+      memberships: [...memberships.values()],
+      skipped: 0,
+    }),
 
     /**
      * フォルダを保存する。同じ ID があれば置き換える。
@@ -231,6 +370,42 @@ export const createMemoryLibraryStore = (): LibraryStore => {
       thumbnails.set(thumbnail.photoId, thumbnail)
     },
 
+    /**
+     * コレクションを保存する。同じ ID があれば置き換える。
+     * @param collection 保存するコレクション
+     */
+    putCollection: async (collection) => {
+      collections.set(collection.id, collection)
+    },
+
+    /**
+     * コレクションと、そこへの所属を削除する。
+     * @param collectionId 削除するコレクションの ID
+     */
+    deleteCollection: async (collectionId) => {
+      collections.delete(collectionId)
+      for (const [key, membership] of memberships) {
+        if (membership.collectionId === collectionId) memberships.delete(key)
+      }
+    },
+
+    /**
+     * 写真をコレクションに所属させる。
+     * @param membership 保存する所属
+     */
+    putMembership: async (membership) => {
+      memberships.set(membershipKey(membership.collectionId, membership.photoId), membership)
+    },
+
+    /**
+     * 写真をコレクションから外す。
+     * @param collectionId コレクションの ID
+     * @param photoId 写真の ID
+     */
+    deleteMembership: async (collectionId, photoId) => {
+      memberships.delete(membershipKey(collectionId, photoId))
+    },
+
     /** 何もしない。閉じる接続がないため。 */
     close: () => {},
   }
@@ -258,23 +433,20 @@ export const openLibraryStore = async (name = DB_NAME): Promise<LibraryStore> =>
 
   return {
     /**
-     * 保存済みのフォルダと写真をすべて読み込む。
-     * 壊れたレコードと、登録されていないフォルダの写真は読み飛ばす。
+     * 保存済みの内容をすべて読み込む。
+     * 壊れたレコードと、登録されていないフォルダの写真、削除されたコレクションへの所属は読み飛ばす。
      * @returns 読み込んだ内容
      */
     load: async () => {
-      const tx = db.transaction(['folders', 'photos'])
-      const [rawFolders, rawPhotos] = await Promise.all([
+      const tx = db.transaction(['folders', 'photos', 'collections', 'memberships'])
+      const [folders, photos, collections, memberships] = await Promise.all([
         tx.objectStore('folders').getAll() as Promise<unknown[]>,
         tx.objectStore('photos').getAll() as Promise<unknown[]>,
+        tx.objectStore('collections').getAll() as Promise<unknown[]>,
+        tx.objectStore('memberships').getAll() as Promise<unknown[]>,
       ])
       await tx.done
-      const folders = rawFolders.map(parseFolderRecord).filter((folder) => folder !== null)
-      const folderIds = new Set(folders.map((folder) => folder.id))
-      const photos = rawPhotos
-        .map(parsePhotoRecord)
-        .filter((photo): photo is PhotoRecord => photo !== null && folderIds.has(photo.folderId))
-      return { folders, photos, skipped: rawFolders.length + rawPhotos.length - folders.length - photos.length }
+      return toSnapshot({ folders, photos, collections, memberships })
     },
 
     /**
@@ -307,6 +479,46 @@ export const openLibraryStore = async (name = DB_NAME): Promise<LibraryStore> =>
      */
     putThumbnail: async (thumbnail) => {
       await db.put('thumbnails', thumbnail)
+    },
+
+    /**
+     * コレクションを保存する。同じ ID があれば置き換える。
+     * @param collection 保存するコレクション
+     */
+    putCollection: async (collection) => {
+      await db.put('collections', collection)
+    },
+
+    /**
+     * コレクションと、そこへの所属を 1 つのトランザクションでまとめて削除する。
+     * @param collectionId 削除するコレクションの ID
+     */
+    deleteCollection: async (collectionId) => {
+      const tx = db.transaction(['collections', 'memberships'], 'readwrite')
+      const memberships = tx.objectStore('memberships')
+      const keys = await memberships.index('byCollection').getAllKeys(collectionId)
+      await Promise.all([
+        tx.objectStore('collections').delete(collectionId),
+        ...keys.map((key) => memberships.delete(key)),
+        tx.done,
+      ])
+    },
+
+    /**
+     * 写真をコレクションに所属させる。所属済みなら置き換える。
+     * @param membership 保存する所属
+     */
+    putMembership: async (membership) => {
+      await db.put('memberships', membership)
+    },
+
+    /**
+     * 写真をコレクションから外す。
+     * @param collectionId コレクションの ID
+     * @param photoId 写真の ID
+     */
+    deleteMembership: async (collectionId, photoId) => {
+      await db.delete('memberships', [collectionId, photoId])
     },
 
     /** データベースとの接続を閉じる。 */

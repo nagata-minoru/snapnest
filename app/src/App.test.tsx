@@ -472,6 +472,247 @@ describe('App', () => {
     expect(screen.getByText(/^PNG ·/)).toBeInTheDocument()
   })
 
+  describe('コレクション', () => {
+    /**
+     * サイドバーでコレクションを作る。
+     * @param user 操作用の userEvent
+     * @param name コレクション名
+     */
+    const createCollection = async (user: ReturnType<typeof userEvent.setup>, name: string) => {
+      await user.click(screen.getByRole('button', { name: 'コレクションを作る' }))
+      await user.type(screen.getByRole('textbox', { name: 'コレクション名' }), name)
+      await user.click(screen.getByRole('button', { name: '作成' }))
+    }
+
+    /**
+     * 写真を選び、詳細表示から既存のコレクションに入れる。
+     * @param user 操作用の userEvent
+     * @param photoName 写真のファイル名
+     * @param collectionName コレクション名
+     */
+    const addToCollection = async (
+      user: ReturnType<typeof userEvent.setup>, photoName: string, collectionName: string,
+    ) => {
+      await user.click(screen.getByRole('button', { name: new RegExp(photoName.replace('.', '\\.')) }))
+      await user.click(within(inspector()).getByRole('button', { name: '＋ 追加' }))
+      const candidates = within(inspector()).getByRole('list', { name: '追加できるコレクション' })
+      await user.click(within(candidates).getByRole('button', { name: collectionName }))
+    }
+
+    /**
+     * 詳細表示を取得する。
+     * @returns 詳細表示の要素
+     */
+    const inspector = () => screen.getByRole('complementary', { name: '写真の詳細' })
+
+    it('サイドバーで作ると空のコレクションを表示し、同じ名前は作れない', async () => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const { user, photoTitles } = await setup(memory.source)
+      await openFolder(user)
+
+      expect(within(nav()).getByText('まだコレクションがありません')).toBeInTheDocument()
+      await createCollection(user, 'Trip')
+
+      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Trip')
+      expect(screen.getByText('このコレクションにはまだ写真がありません')).toBeInTheDocument()
+      expect(photoTitles()).toEqual([])
+      expect(within(nav()).getByRole('button', { name: /Trip/ })).toHaveAttribute('aria-current', 'page')
+
+      await createCollection(user, ' ｔｒｉｐ ')
+
+      const input = screen.getByRole('textbox', { name: 'コレクション名' })
+      expect(input).toHaveAttribute('aria-invalid', 'true')
+      expect(input).toHaveAccessibleDescription('「ｔｒｉｐ」という名前のコレクションはすでにあります。')
+      await user.keyboard('{Escape}')
+      expect(screen.queryByRole('textbox', { name: 'コレクション名' })).not.toBeInTheDocument()
+      expect(within(nav()).getAllByRole('button', { name: /trip/i })).toHaveLength(1)
+    })
+
+    it('詳細表示から写真を入れ、1 枚を複数のコレクションに入れられる', async () => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const { user, photoTitles } = await setup(memory.source)
+      await openFolder(user)
+      await createCollection(user, 'Trip')
+      await user.click(within(nav()).getByRole('button', { name: /すべての写真/ }))
+
+      expect(within(inspector()).getByText('未登録')).toBeInTheDocument()
+      await addToCollection(user, 'station.png', 'Trip')
+
+      expect(within(inspector()).getByRole('button', { name: '「Trip」から外す' })).toBeInTheDocument()
+      expect(within(nav()).getByRole('button', { name: /Trip/ })).toHaveTextContent(/1$/)
+
+      await user.click(within(inspector()).getByRole('button', { name: '＋ 追加' }))
+      await user.type(within(inspector()).getByRole('textbox', { name: '新しいコレクションの名前' }), 'お気に入り')
+      await user.click(within(inspector()).getByRole('button', { name: '作って追加' }))
+
+      expect(await within(inspector()).findByRole('button', { name: '「お気に入り」から外す' })).toBeInTheDocument()
+      expect(within(inspector()).getByRole('button', { name: '「Trip」から外す' })).toBeInTheDocument()
+      expect(photoTitles()).toHaveLength(3)
+
+      await user.click(within(nav()).getByRole('button', { name: /お気に入り/ }))
+      expect(screen.getByRole('heading', { level: 1 }).previousElementSibling).toHaveTextContent('コレクション')
+      expect(photoTitles()).toEqual(['station.png'])
+    })
+
+    it('コレクションから外すと一覧から消え、写真はライブラリに残る', async () => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const { user, photoTitles } = await setup(memory.source)
+      await openFolder(user)
+      await createCollection(user, 'Trip')
+      await user.click(within(nav()).getByRole('button', { name: /すべての写真/ }))
+      await addToCollection(user, 'station.png', 'Trip')
+      await addToCollection(user, 'morning.jpg', 'Trip')
+      await user.click(within(nav()).getByRole('button', { name: /Trip/ }))
+
+      expect(photoTitles()).toEqual(['morning.jpg', 'station.png'])
+      await user.click(screen.getByRole('button', { name: /station\.png/ }))
+      await user.click(within(inspector()).getByRole('button', { name: '「Trip」から外す' }))
+
+      expect(photoTitles()).toEqual(['morning.jpg'])
+      expect(within(nav()).getByRole('button', { name: /すべての写真/ })).toHaveTextContent(/3$/)
+    })
+
+    it('開き直してもコレクションと所属が残る', async () => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const first = await setup(memory.source)
+      await openFolder(first.user)
+      await createCollection(first.user, 'Trip')
+      await first.user.click(within(nav()).getByRole('button', { name: /すべての写真/ }))
+      await addToCollection(first.user, 'window.webp', 'Trip')
+      first.unmount()
+
+      const { user, photoTitles } = await setup(memory.source)
+      await user.click(within(nav()).getByRole('button', { name: /Trip/ }))
+
+      expect(photoTitles()).toEqual(['window.webp'])
+    })
+
+    it('名前を変更できる。ほかのコレクションと同じ名前にはできない', async () => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const { user } = await setup(memory.source)
+      await openFolder(user)
+      await createCollection(user, 'お気に入り')
+      await createCollection(user, 'Trip')
+
+      await user.click(screen.getByRole('button', { name: '名前を変更' }))
+      const input = screen.getByRole('textbox', { name: '新しいコレクション名' })
+      expect(input).toHaveValue('Trip')
+      await user.clear(input)
+      await user.type(input, 'お気に入り')
+      await user.click(screen.getByRole('button', { name: '変更' }))
+      expect(input).toHaveAccessibleDescription('「お気に入り」という名前のコレクションはすでにあります。')
+
+      await user.clear(input)
+      await user.type(input, '旅行')
+      await user.click(screen.getByRole('button', { name: '変更' }))
+
+      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('旅行')
+      expect(screen.queryByRole('textbox', { name: '新しいコレクション名' })).not.toBeInTheDocument()
+      expect(within(nav()).getByRole('button', { name: /旅行/ })).toHaveAttribute('aria-current', 'page')
+    })
+
+    it('確認してから削除し、写真はライブラリに残す', async () => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const { user, photoTitles } = await setup(memory.source)
+      await openFolder(user)
+      await createCollection(user, 'Trip')
+      await user.click(within(nav()).getByRole('button', { name: /すべての写真/ }))
+      await addToCollection(user, 'station.png', 'Trip')
+      await user.click(within(nav()).getByRole('button', { name: /Trip/ }))
+
+      await user.click(screen.getByRole('button', { name: '削除' }))
+      const confirm = screen.getByRole('alert')
+      expect(confirm).toHaveTextContent('コレクション「Trip」を削除しますか？')
+      await user.click(within(confirm).getByRole('button', { name: 'やめる' }))
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+      expect(photoTitles()).toEqual(['station.png'])
+
+      await user.click(screen.getByRole('button', { name: '削除' }))
+      await user.click(within(screen.getByRole('alert')).getByRole('button', { name: '削除する' }))
+
+      expect(await screen.findByRole('heading', { level: 1, name: 'すべての写真' })).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent('コレクション「Trip」を削除しました。')
+      expect(within(nav()).queryByRole('button', { name: /Trip/ })).not.toBeInTheDocument()
+      expect(photoTitles()).toHaveLength(3)
+      await user.click(screen.getByRole('button', { name: /station\.png/ }))
+      expect(within(inspector()).getByText('未登録')).toBeInTheDocument()
+    })
+  })
+
+  describe('検索', () => {
+    /**
+     * 検索欄に入力する。
+     * @param user 操作用の userEvent
+     * @param query 検索語
+     */
+    const search = async (user: ReturnType<typeof userEvent.setup>, query: string) => {
+      const input = screen.getByRole('searchbox', { name: '写真を検索' })
+      await user.clear(input)
+      await user.type(input, query)
+    }
+
+    it('ファイル名やフォルダ名で絞り込み、件数を表示する', async () => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const { user, photoTitles } = await setup(memory.source)
+      await openFolder(user)
+
+      await search(user, 'trip')
+      await waitFor(() => expect(photoTitles()).toEqual(['station.png']))
+      expect(screen.getByText('1 件の検索結果')).toBeInTheDocument()
+
+      await search(user, 'ＷＩＮＤＯＷ　webp')
+      await waitFor(() => expect(photoTitles()).toEqual(['window.webp']))
+
+      await search(user, 'pictures')
+      await waitFor(() => expect(photoTitles()).toHaveLength(3))
+
+      await user.clear(screen.getByRole('searchbox', { name: '写真を検索' }))
+      await waitFor(() => expect(screen.getByText('3 枚')).toBeInTheDocument())
+    })
+
+    it('一致する写真がなければ案内を出す', async () => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const { user, photoTitles } = await setup(memory.source)
+      await openFolder(user)
+
+      await search(user, 'sunset')
+
+      expect(await screen.findByText('「sunset」に一致する写真はありません')).toBeInTheDocument()
+      expect(photoTitles()).toEqual([])
+      expect(screen.getByText('0 件の検索結果')).toBeInTheDocument()
+    })
+
+    it('表示中のコレクションの中から探す', async () => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const { user, photoTitles } = await setup(memory.source)
+      await openFolder(user)
+      await user.click(screen.getByRole('button', { name: 'コレクションを作る' }))
+      await user.type(screen.getByRole('textbox', { name: 'コレクション名' }), 'Trip')
+      await user.click(screen.getByRole('button', { name: '作成' }))
+      await user.click(within(nav()).getByRole('button', { name: /すべての写真/ }))
+      await user.click(screen.getByRole('button', { name: /window\.webp/ }))
+      const inspector = screen.getByRole('complementary', { name: '写真の詳細' })
+      await user.click(within(inspector).getByRole('button', { name: '＋ 追加' }))
+      await user.click(within(inspector).getByRole('button', { name: 'Trip' }))
+      await user.click(within(nav()).getByRole('button', { name: /Trip/ }))
+
+      await search(user, 'station')
+      expect(await screen.findByText('「station」に一致する写真はありません')).toBeInTheDocument()
+
+      await search(user, 'window')
+      await waitFor(() => expect(photoTitles()).toEqual(['window.webp']))
+    })
+  })
+
   describe('狭い画面', () => {
     it('メニューを開き、表示範囲を選ぶか閉じるボタンや Esc キーで閉じる', async () => {
       const memory = createPicturesSource()

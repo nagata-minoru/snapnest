@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  createMemoryLibraryStore, type FolderRecord, type LibraryStore, type PhotoRecord, type ThumbnailCache,
+  createMemoryLibraryStore, type CollectionRecord, type FolderRecord, type LibraryStore, type MembershipRecord,
+  type PhotoRecord, type ThumbnailCache,
 } from '../db/libraryStore'
 import type { AccessPermission, FolderRef, PhotoSource, UnavailableReason } from '../fs/photoSource'
+import { validateCollectionName } from './collections'
 import { ScanError, scanFolder } from './scanFolder'
 
 /** ライブラリの読み込み状態 */
@@ -18,6 +20,8 @@ export type Library = {
   persistent: boolean
   folders: FolderRecord[]
   photos: PhotoRecord[]
+  collections: CollectionRecord[]
+  memberships: MembershipRecord[]
   permissions: Readonly<Record<string, AccessPermission>>
   scan: ScanProgress | null
   notice: string | null
@@ -27,6 +31,14 @@ export type Library = {
   rescan: (folderId: string) => Promise<void>
   requestAccess: (folderId: string) => Promise<void>
   reportUnavailable: (photoId: string, reason: UnavailableReason) => void
+  /** コレクションを作る。名前が使えないか保存できなければ通知して `null` を返す */
+  createCollection: (name: string) => Promise<CollectionRecord | null>
+  /** コレクションの名前を変える。名前が使えないか保存できなければ通知して `false` を返す */
+  renameCollection: (collectionId: string, name: string) => Promise<boolean>
+  /** コレクションを削除する。写真は削除しない。保存できなければ通知して `false` を返す */
+  deleteCollection: (collectionId: string) => Promise<boolean>
+  addToCollection: (collectionId: string, photoId: string) => Promise<void>
+  removeFromCollection: (collectionId: string, photoId: string) => Promise<void>
   dismissNotice: () => void
 }
 
@@ -71,12 +83,14 @@ export const useLibrary = (source: PhotoSource, openStore: () => Promise<Library
   const [persistent, setPersistent] = useState(true)
   const [folders, setFolders] = useState<FolderRecord[]>([])
   const [photos, setPhotos] = useState<PhotoRecord[]>([])
+  const [collections, setCollections] = useState<CollectionRecord[]>([])
+  const [memberships, setMemberships] = useState<MembershipRecord[]>([])
   const [permissions, setPermissions] = useState<Record<string, AccessPermission>>({})
   const [scan, setScan] = useState<ScanProgress | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const storeRef = useRef<LibraryStore | null>(null)
-  const latest = useRef({ folders, photos, scanning: false })
-  latest.current = { folders, photos, scanning: scan !== null }
+  const latest = useRef({ folders, photos, collections, memberships, scanning: false })
+  latest.current = { folders, photos, collections, memberships, scanning: scan !== null }
 
   useEffect(() => {
     let cancelled = false
@@ -109,6 +123,8 @@ export const useLibrary = (source: PhotoSource, openStore: () => Promise<Library
         if (cancelled) return
         setFolders(snapshot.folders)
         setPhotos(snapshot.photos)
+        setCollections(snapshot.collections)
+        setMemberships(snapshot.memberships)
         setPermissions(Object.fromEntries(entries))
         if (snapshot.skipped) setNotice(`壊れた保存データが ${snapshot.skipped} 件あったため、読み飛ばしました。`)
       } catch {
@@ -263,6 +279,120 @@ export const useLibrary = (source: PhotoSource, openStore: () => Promise<Library
     }
   }, [source])
 
+  /**
+   * コレクションを作る。
+   * @param input 入力された名前
+   * @returns 作ったコレクション。作れなければ `null`
+   */
+  const createCollection = useCallback(async (input: string) => {
+    const store = storeRef.current
+    if (!store) return null
+    const result = validateCollectionName(input, latest.current.collections)
+    if ('error' in result) {
+      setNotice(result.error)
+      return null
+    }
+    const now = Date.now()
+    const collection: CollectionRecord = { id: crypto.randomUUID(), name: result.name, createdAt: now, updatedAt: now }
+    try {
+      await store.putCollection(collection)
+    } catch {
+      setNotice('コレクションを保存できませんでした。')
+      return null
+    }
+    setCollections((current) => [...current, collection])
+    requestPersistence()
+    return collection
+  }, [])
+
+  /**
+   * コレクションの名前を変える。
+   * @param collectionId コレクションの ID
+   * @param input 入力された名前
+   * @returns 変えられたら `true`
+   */
+  const renameCollection = useCallback(async (collectionId: string, input: string) => {
+    const store = storeRef.current
+    const collection = latest.current.collections.find((item) => item.id === collectionId)
+    if (!store || !collection) return false
+    const result = validateCollectionName(input, latest.current.collections, collectionId)
+    if ('error' in result) {
+      setNotice(result.error)
+      return false
+    }
+    const renamed: CollectionRecord = { ...collection, name: result.name, updatedAt: Date.now() }
+    try {
+      await store.putCollection(renamed)
+    } catch {
+      setNotice('コレクションの名前を保存できませんでした。')
+      return false
+    }
+    setCollections((current) => current.map((item) => item.id === collectionId ? renamed : item))
+    return true
+  }, [])
+
+  /**
+   * コレクションと、そこへの所属を削除する。写真そのものは残す。
+   * @param collectionId 削除するコレクションの ID
+   * @returns 削除できたら `true`
+   */
+  const deleteCollection = useCallback(async (collectionId: string) => {
+    const store = storeRef.current
+    const collection = latest.current.collections.find((item) => item.id === collectionId)
+    if (!store || !collection) return false
+    try {
+      await store.deleteCollection(collectionId)
+    } catch {
+      setNotice('コレクションを削除できませんでした。')
+      return false
+    }
+    setCollections((current) => current.filter((item) => item.id !== collectionId))
+    setMemberships((current) => current.filter((item) => item.collectionId !== collectionId))
+    setNotice(`コレクション「${collection.name}」を削除しました。写真はライブラリに残っています。`)
+    return true
+  }, [])
+
+  /**
+   * 写真をコレクションに入れる。入っていれば何もしない。
+   * @param collectionId コレクションの ID
+   * @param photoId 写真の ID
+   */
+  const addToCollection = useCallback(async (collectionId: string, photoId: string) => {
+    const store = storeRef.current
+    if (!store) return
+    const exists = latest.current.memberships.some((item) => (
+      item.collectionId === collectionId && item.photoId === photoId
+    ))
+    if (exists) return
+    const membership: MembershipRecord = { collectionId, photoId, addedAt: Date.now() }
+    try {
+      await store.putMembership(membership)
+    } catch {
+      setNotice('コレクションに追加できませんでした。')
+      return
+    }
+    setMemberships((current) => [...current, membership])
+  }, [])
+
+  /**
+   * 写真をコレクションから外す。写真そのものは残す。
+   * @param collectionId コレクションの ID
+   * @param photoId 写真の ID
+   */
+  const removeFromCollection = useCallback(async (collectionId: string, photoId: string) => {
+    const store = storeRef.current
+    if (!store) return
+    try {
+      await store.deleteMembership(collectionId, photoId)
+    } catch {
+      setNotice('コレクションから外せませんでした。')
+      return
+    }
+    setMemberships((current) => current.filter((item) => (
+      !(item.collectionId === collectionId && item.photoId === photoId)
+    )))
+  }, [])
+
   /** 通知を閉じる。 */
   const dismissNotice = useCallback(() => setNotice(null), [])
 
@@ -284,7 +414,8 @@ export const useLibrary = (source: PhotoSource, openStore: () => Promise<Library
   }), [])
 
   return {
-    status, persistent, folders, photos, permissions, scan, notice, thumbnails,
-    addFolder, rescan, requestAccess, reportUnavailable, dismissNotice,
+    status, persistent, folders, photos, collections, memberships, permissions, scan, notice, thumbnails,
+    addFolder, rescan, requestAccess, reportUnavailable,
+    createCollection, renameCollection, deleteCollection, addToCollection, removeFromCollection, dismissNotice,
   }
 }
