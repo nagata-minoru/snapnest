@@ -44,6 +44,7 @@ export const createMemorySource = () => {
 
   const source: PhotoSource = {
     supported: true,
+
     /**
      * 予約しておいた結果でフォルダを選ぶ。選ばれたフォルダには権限を与える。
      * @returns 選択結果。予約がなければキャンセル
@@ -57,6 +58,7 @@ export const createMemorySource = () => {
       folder.permission = 'granted'
       return { status: 'picked', ref: folderRef(next), name: folder.name }
     },
+
     /**
      * 2 つの参照が同じフォルダを指すか、フォルダのキーで調べる。
      * @param a 比較するフォルダ
@@ -66,12 +68,14 @@ export const createMemorySource = () => {
     isSameFolder: async (a, b) => {
       return (a as unknown as MemoryFolderRef).folderKey === (b as unknown as MemoryFolderRef).folderKey
     },
+
     /**
      * フォルダの権限を返す。
      * @param ref 調べるフォルダ
      * @returns 権限の状態。フォルダがなければ `denied`
      */
     queryPermission: async (ref) => folderOf(ref)?.permission ?? 'denied',
+
     /**
      * フォルダの権限を、あらかじめ決めた結果に変える。
      * @param ref 権限を求めるフォルダ
@@ -83,6 +87,7 @@ export const createMemorySource = () => {
       folder.permission = folder.requestResult
       return folder.permission
     },
+
     /**
      * フォルダ内の画像ファイルを列挙する。`failScanAfter` の数を返した後は例外を投げる。
      * @param ref 列挙するフォルダ
@@ -109,6 +114,7 @@ export const createMemorySource = () => {
         }
       }
     },
+
     /**
      * ファイルの内容を読む。
      * @param ref 読むファイル
@@ -131,6 +137,7 @@ export const createMemorySource = () => {
 
   return {
     source,
+
     /**
      * フォルダを用意する。
      * @param folderKey フォルダのキー
@@ -146,6 +153,7 @@ export const createMemorySource = () => {
         failScanAfter: null,
       })
     },
+
     /**
      * 次のフォルダ選択の結果を予約する。
      * @param result 選ばれるフォルダのキー、またはキャンセル・失敗
@@ -153,6 +161,7 @@ export const createMemorySource = () => {
     queuePick: (result: string | 'cancel' | 'fail') => {
       picks.push(result)
     },
+
     /**
      * フォルダを取り出す。テストの中で状態を書き換えるために使う。
      * @param folderKey フォルダのキー

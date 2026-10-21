@@ -121,31 +121,37 @@ export const isImageFileName = (name: string) => !name.startsWith('.') && imageE
  */
 export const createUnsupportedSource = (): PhotoSource => ({
   supported: false,
+
   /**
    * フォルダを選ばせず、失敗を返す。
    * @returns 非対応であることを伝える失敗の結果
    */
   pickFolder: async () => ({ status: 'failed', message: 'このブラウザはフォルダの参照に対応していません。' }),
+
   /**
    * 常に別のフォルダとみなす。
    * @returns 常に `false`
    */
   isSameFolder: async () => false,
+
   /**
    * 常に権限がないとみなす。
    * @returns 常に `denied`
    */
   queryPermission: async () => 'denied',
+
   /**
    * 権限を求めず、権限がないとみなす。
    * @returns 常に `denied`
    */
   requestPermission: async () => 'denied',
+
   /**
    * 何も列挙しない。
    * @returns 何も返さない非同期ジェネレーター
    */
   scanImages: async function* () {},
+
   /**
    * ファイルを読まず、読めなかった結果を返す。
    * @returns 理由を `unavailable` とした失敗の結果

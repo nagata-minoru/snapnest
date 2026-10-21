@@ -53,16 +53,19 @@ export interface LibraryStore {
    * @returns 読み込んだ内容
    */
   load(): Promise<LibrarySnapshot>
+
   /**
    * フォルダを保存する。同じ ID があれば置き換える。
    * @param folder 保存するフォルダ
    */
   putFolder(folder: FolderRecord): Promise<void>
+
   /**
    * 写真をまとめて保存する。同じ ID があれば置き換える。
    * @param photos 保存する写真
    */
   putPhotos(photos: PhotoRecord[]): Promise<void>
+
   /** データベースとの接続を閉じる。 */
   close(): void
 }
@@ -142,6 +145,7 @@ export const createMemoryLibraryStore = (): LibraryStore => {
      * @returns 保存済みの内容
      */
     load: async () => ({ folders: [...folders.values()], photos: [...photos.values()], skipped: 0 }),
+
     /**
      * フォルダを保存する。同じ ID があれば置き換える。
      * @param folder 保存するフォルダ
@@ -149,6 +153,7 @@ export const createMemoryLibraryStore = (): LibraryStore => {
     putFolder: async (folder) => {
       folders.set(folder.id, folder)
     },
+
     /**
      * 写真をまとめて保存する。同じ ID があれば置き換える。
      * @param records 保存する写真
@@ -156,6 +161,7 @@ export const createMemoryLibraryStore = (): LibraryStore => {
     putPhotos: async (records) => {
       for (const photo of records) photos.set(photo.id, photo)
     },
+
     /** 何もしない。閉じる接続がないため。 */
     close: () => {},
   }
