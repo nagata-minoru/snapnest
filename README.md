@@ -1,5 +1,7 @@
 # snapnest
 
+[![CI](https://github.com/nagata-minoru/snapnest/actions/workflows/ci.yml/badge.svg)](https://github.com/nagata-minoru/snapnest/actions/workflows/ci.yml)
+
 ローカルにある写真を、ブラウザ上で整理・検索するための写真管理アプリです。
 
 > 開発の初期段階です。現在はフォルダ選択・写真一覧・メタデータ保存までを実装しています（下記「開発段階」を参照）。
