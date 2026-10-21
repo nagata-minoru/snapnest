@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { createMemoryLibraryStore, type FolderRecord, type LibraryStore, type PhotoRecord } from '../db/libraryStore'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  createMemoryLibraryStore, type FolderRecord, type LibraryStore, type PhotoRecord, type ThumbnailCache,
+} from '../db/libraryStore'
 import type { AccessPermission, FolderRef, PhotoSource, UnavailableReason } from '../fs/photoSource'
 import { ScanError, scanFolder } from './scanFolder'
 
@@ -19,6 +21,8 @@ export type Library = {
   permissions: Readonly<Record<string, AccessPermission>>
   scan: ScanProgress | null
   notice: string | null
+  /** サムネイルのキャッシュ。保存先を開く前や閉じた後は、何もないものとして振る舞う */
+  thumbnails: ThumbnailCache
   addFolder: () => Promise<void>
   rescan: (folderId: string) => Promise<void>
   requestAccess: (folderId: string) => Promise<void>
@@ -260,10 +264,27 @@ export const useLibrary = (source: PhotoSource, openStore: () => Promise<Library
   }, [source])
 
   /** 通知を閉じる。 */
-  const dismissNotice =useCallback(() => setNotice(null), [])
+  const dismissNotice = useCallback(() => setNotice(null), [])
+
+  const thumbnails = useMemo<ThumbnailCache>(() => ({
+    /**
+     * 開いている保存先からサムネイルを読む。
+     * @param photoId 写真の ID
+     * @returns サムネイル。保存先を開いていなければ `null`
+     */
+    getThumbnail: async (photoId) => (await storeRef.current?.getThumbnail(photoId)) ?? null,
+
+    /**
+     * 開いている保存先にサムネイルを保存する。保存先を開いていなければ何もしない。
+     * @param thumbnail 保存するサムネイル
+     */
+    putThumbnail: async (thumbnail) => {
+      await storeRef.current?.putThumbnail(thumbnail)
+    },
+  }), [])
 
   return {
-    status, persistent, folders, photos, permissions, scan, notice,
+    status, persistent, folders, photos, permissions, scan, notice, thumbnails,
     addFolder, rescan, requestAccess, reportUnavailable, dismissNotice,
   }
 }

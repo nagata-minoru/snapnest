@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react'
-import type { PhotoRecord } from '../db/libraryStore'
+import type { PhotoRecord, ThumbnailCache } from '../db/libraryStore'
 import type { PhotoSource, UnavailableReason } from '../fs/photoSource'
 import { formatShortDate } from '../library/format'
-import { useNearViewport, usePhotoUrl, type PhotoImage } from './usePhotoUrl'
+import type { ThumbnailMaker } from '../thumbnails/thumbnailMaker'
+import { useNearViewport, useThumbnailUrl, type PhotoImage } from './usePhotoUrl'
 
 /**
  * 写真の画像に重ねて表示する状態の文言を決める。
@@ -20,33 +21,30 @@ export const photoStateLabel = (photo: PhotoRecord, accessible: boolean, image: 
 }
 
 /**
- * 写真の原本を読み込んで表示する画像。読めない場合は状態を表示する。
- * @param props.source ファイルアクセスの抽象化レイヤー
+ * 写真の画像を表示する。問題があれば状態を重ねて表示する。
+ * 画像がなければ状態だけを全面に、画像があれば隅に小さく表示する。
  * @param props.photo 表示する写真
  * @param props.accessible フォルダへのアクセスが許可されているか
- * @param props.active 読み込むかどうか。画面から離れているときなどは `false`
+ * @param props.image 画像の読み込み状態
  * @param props.className 外枠に付けるクラス名
- * @param props.onUnavailable 読めなかったときに呼ばれる
  * @param props.onLoad 画像を表示できたときに、画像の幅と高さを引数に呼ばれる
  * @returns 画像の React 要素
  */
-export const PhotoImageView = ({ source, photo, accessible, active = true, className = '', onUnavailable, onLoad }: {
-  source: PhotoSource
+export const PhotoImageView = ({ photo, accessible, image, className = '', onLoad }: {
   photo: PhotoRecord
   accessible: boolean
-  active?: boolean
+  image: PhotoImage
   className?: string
-  onUnavailable: (photoId: string, reason: UnavailableReason) => void
   onLoad?: (width: number, height: number) => void
 }) => {
-  const image = usePhotoUrl(source, photo, active && accessible && photo.status === 'available', onUnavailable)
   const [brokenUrl, setBrokenUrl] = useState<string | null>(null)
   const broken = image.status === 'ready' && image.url === brokenUrl
   const label = photoStateLabel(photo, accessible, image, broken)
+  const shown = image.status === 'ready' && !broken
 
   return (
     <div className={`thumbnail ${image.status} ${className}`}>
-      {image.status === 'ready' && !broken && (
+      {shown && (
         <img
           src={image.url}
           alt=""
@@ -55,14 +53,16 @@ export const PhotoImageView = ({ source, photo, accessible, active = true, class
           onError={() => setBrokenUrl(image.url)}
         />
       )}
-      {label && <span className="thumbnail-state">{label}</span>}
+      {label && <span className={`thumbnail-state ${shown ? 'badge' : ''}`}>{label}</span>}
     </div>
   )
 }
 
 /**
- * 写真一覧の 1 枚分のカード。画面の近くにある間だけ原本を読み込む。
+ * 写真一覧の 1 枚分のカード。画面の近くにある間だけサムネイルを用意する。
  * @param props.source ファイルアクセスの抽象化レイヤー
+ * @param props.thumbnails サムネイルのキャッシュ
+ * @param props.makeThumbnail 原本からサムネイルを作る関数
  * @param props.photo 表示する写真
  * @param props.accessible フォルダへのアクセスが許可されているか
  * @param props.selected 選択中か
@@ -70,8 +70,10 @@ export const PhotoImageView = ({ source, photo, accessible, active = true, class
  * @param props.onUnavailable 原本を読めなかったときに呼ばれる
  * @returns カードの React 要素
  */
-export const PhotoCard = ({ source, photo, accessible, selected, onSelect, onUnavailable }: {
+export const PhotoCard = ({ source, thumbnails, makeThumbnail, photo, accessible, selected, onSelect, onUnavailable }: {
   source: PhotoSource
+  thumbnails: ThumbnailCache
+  makeThumbnail: ThumbnailMaker
   photo: PhotoRecord
   accessible: boolean
   selected: boolean
@@ -80,6 +82,15 @@ export const PhotoCard = ({ source, photo, accessible, selected, onSelect, onUna
 }) => {
   const card = useRef<HTMLButtonElement>(null)
   const near = useNearViewport(card)
+  const image = useThumbnailUrl({
+    source,
+    cache: thumbnails,
+    makeThumbnail,
+    photo,
+    enabled: near,
+    readable: accessible && photo.status === 'available',
+    onUnavailable,
+  })
 
   return (
     <button
@@ -88,13 +99,7 @@ export const PhotoCard = ({ source, photo, accessible, selected, onSelect, onUna
       aria-pressed={selected}
       onClick={() => onSelect(photo.id)}
     >
-      <PhotoImageView
-        source={source}
-        photo={photo}
-        accessible={accessible}
-        active={near}
-        onUnavailable={onUnavailable}
-      />
+      <PhotoImageView photo={photo} accessible={accessible} image={image} />
       <span className="selection">✓</span>
       <span className="photo-caption">
         <strong title={photo.relativePath}>{photo.name}</strong>

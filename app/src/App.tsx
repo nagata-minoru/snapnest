@@ -4,6 +4,7 @@ import { PhotoCard } from './components/PhotoCard'
 import type { LibraryStore, PhotoRecord } from './db/libraryStore'
 import type { PhotoSource } from './fs/photoSource'
 import { useLibrary } from './library/useLibrary'
+import { noThumbnail, type ThumbnailMaker } from './thumbnails/thumbnailMaker'
 
 /** 写真一覧に表示する範囲 */
 type View = { kind: 'all' } | { kind: 'missing' } | { kind: 'folder'; folderId: string }
@@ -35,9 +36,14 @@ const isInView = (photo: PhotoRecord, view: View) => (
  * サイドバー、写真一覧、詳細表示、通知を描画する。
  * @param props.source ファイルアクセスの抽象化レイヤー
  * @param props.openStore メタデータの保存先を開く関数
+ * @param props.makeThumbnail 原本からサムネイルを作る関数。省略するとサムネイルを作らず原本を表示する
  * @returns 写真ライブラリ画面全体の React 要素
  */
-export const App = ({ source, openStore }: { source: PhotoSource; openStore: () => Promise<LibraryStore> }) => {
+export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
+  source: PhotoSource
+  openStore: () => Promise<LibraryStore>
+  makeThumbnail?: ThumbnailMaker
+}) => {
   const library = useLibrary(source, openStore)
   const { folders, permissions, scan } = library
   const [view, setView] = useState<View>({ kind: 'all' })
@@ -111,6 +117,8 @@ export const App = ({ source, openStore }: { source: PhotoSource; openStore: () 
             <PhotoCard
               key={photo.id}
               source={source}
+              thumbnails={library.thumbnails}
+              makeThumbnail={makeThumbnail}
               photo={photo}
               accessible={isAccessible(photo)}
               selected={selectedPhoto?.id === photo.id}
@@ -160,6 +168,7 @@ export const App = ({ source, openStore }: { source: PhotoSource; openStore: () 
       <Inspector
         key={selectedPhoto.id}
         source={source}
+        thumbnails={library.thumbnails}
         photo={selectedPhoto}
         folder={folders.find((folder) => folder.id === selectedPhoto.folderId)}
         accessible={isAccessible(selectedPhoto)}
@@ -213,7 +222,7 @@ export const App = ({ source, openStore }: { source: PhotoSource; openStore: () 
           </p>
           <p className="storage-note">
             ブラウザのサイトデータを削除したりシークレットモードで開いたりすると、
-            登録したフォルダや写真の情報は失われます。写真の原本は消えません。
+            登録したフォルダや写真の情報、サムネイルは失われます。写真の原本は消えません。
           </p>
         </div>
       </aside>

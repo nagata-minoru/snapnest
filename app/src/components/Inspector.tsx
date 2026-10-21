@@ -1,8 +1,10 @@
 import { useState } from 'react'
-import type { FolderRecord, PhotoRecord } from '../db/libraryStore'
+import type { FolderRecord, PhotoRecord, ThumbnailCache } from '../db/libraryStore'
 import type { PhotoSource, UnavailableReason } from '../fs/photoSource'
 import { formatBytes, formatDate, formatDirectory, formatKind } from '../library/format'
 import { PhotoImageView } from './PhotoCard'
+import { noThumbnail } from '../thumbnails/thumbnailMaker'
+import { usePhotoUrl, useThumbnailUrl } from './usePhotoUrl'
 
 /**
  * 保存場所の下に添える、原本を参照できるかの説明。
@@ -20,7 +22,9 @@ const LocationStatus = ({ photo, accessible }: { photo: PhotoRecord; accessible:
 
 /**
  * 選択中の写真の詳細表示。写真を切り替えるときは `key` を変えて状態を作り直す。
+ * 原本を表示し、読めないとき（参照切れ・権限なし）は保存済みのサムネイルで代える。
  * @param props.source ファイルアクセスの抽象化レイヤー
+ * @param props.thumbnails サムネイルのキャッシュ
  * @param props.photo 表示する写真
  * @param props.folder 写真が入っているフォルダ
  * @param props.accessible フォルダへのアクセスが許可されているか
@@ -30,8 +34,11 @@ const LocationStatus = ({ photo, accessible }: { photo: PhotoRecord; accessible:
  * @param props.onRescan フォルダを読み込み直すときに呼ばれる
  * @returns 詳細表示の React 要素
  */
-export const Inspector = ({ source, photo, folder, accessible, scanning, onUnavailable, onRequestAccess, onRescan }: {
+export const Inspector = ({
+  source, thumbnails, photo, folder, accessible, scanning, onUnavailable, onRequestAccess, onRescan,
+}: {
   source: PhotoSource
+  thumbnails: ThumbnailCache
   photo: PhotoRecord
   folder: FolderRecord | undefined
   accessible: boolean
@@ -41,17 +48,25 @@ export const Inspector = ({ source, photo, folder, accessible, scanning, onUnava
   onRescan: (folderId: string) => void
 }) => {
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null)
+  const readable = accessible && photo.status === 'available'
+  const original = usePhotoUrl(source, photo, readable, onUnavailable)
+  // 原本を読めないときだけ、保存済みのサムネイルを探す。ここでは新しく作らない
+  const cached = useThumbnailUrl({
+    source, cache: thumbnails, makeThumbnail: noThumbnail, photo, enabled: !readable, readable: false, onUnavailable,
+  })
   const directory = formatDirectory(photo.relativePath)
   const location = [folder?.name ?? '不明なフォルダ', directory].filter(Boolean).join(' / ')
 
   return <>
     <PhotoImageView
-      source={source}
       photo={photo}
       accessible={accessible}
+      image={readable ? original : cached}
       className="inspector-image"
-      onUnavailable={onUnavailable}
-      onLoad={(width, height) => setDimensions({ width, height })}
+      onLoad={(width, height) => {
+        // サムネイルの大きさは原本の大きさではないため表示しない
+        if (readable) setDimensions({ width, height })
+      }}
     />
     <div className="inspector-heading">
       <div><h2 title={photo.name}>{photo.name}</h2><p>{formatDate(photo.lastModified)} 更新</p></div>

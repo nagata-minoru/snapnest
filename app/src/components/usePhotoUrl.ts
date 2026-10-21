@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
-import type { PhotoRecord } from '../db/libraryStore'
+import type { PhotoRecord, ThumbnailCache, ThumbnailRecord } from '../db/libraryStore'
 import type { PhotoSource, ReadResult, UnavailableReason } from '../fs/photoSource'
+import type { ThumbnailMaker } from '../thumbnails/thumbnailMaker'
 
 /** 写真の画像の読み込み状態 */
 export type PhotoImage =
@@ -54,6 +55,123 @@ export const usePhotoUrl = (
       if (url) URL.revokeObjectURL(url)
     }
   }, [source, id, ref, enabled])
+
+  return image
+}
+
+/**
+ * キャッシュ済みのサムネイルが原本と同じ版から作られたものか判定する。
+ * @param thumbnail キャッシュ済みのサムネイル
+ * @param original 原本のサイズと更新日時
+ * @returns 同じ版から作られていれば `true`
+ */
+const isFresh = (thumbnail: ThumbnailRecord | null, original: { size: number; lastModified: number }) => (
+  thumbnail !== null && thumbnail.size === original.size && thumbnail.lastModified === original.lastModified
+)
+
+/**
+ * 一覧に表示するサムネイルの URL を用意する。
+ * 原本を読めるときは原本のサイズと更新日時でキャッシュを確かめ、古ければ作り直して保存する。
+ * サムネイルを作れなければ原本をそのまま表示する。
+ * 原本を読めないとき（参照切れ・権限なし）は、写真の情報と一致するキャッシュがあればそれを表示する。
+ * @param options.source ファイルアクセスの抽象化レイヤー
+ * @param options.cache サムネイルのキャッシュ
+ * @param options.makeThumbnail 原本からサムネイルを作る関数
+ * @param options.photo 表示する写真
+ * @param options.enabled 読み込むかどうか。`false` なら読み込まず、作った URL も解放する
+ * @param options.readable 原本を読みに行ってよいか。`false` ならキャッシュだけを使う
+ * @param options.onUnavailable 原本を読めなかったときに呼ばれる
+ * @returns 読み込み状態
+ */
+export const useThumbnailUrl = ({ source, cache, makeThumbnail, photo, enabled, readable, onUnavailable }: {
+  source: PhotoSource
+  cache: ThumbnailCache
+  makeThumbnail: ThumbnailMaker
+  photo: PhotoRecord
+  enabled: boolean
+  readable: boolean
+  onUnavailable: (photoId: string, reason: UnavailableReason) => void
+}): PhotoImage => {
+  const [image, setImage] = useState<PhotoImage>({ status: 'idle' })
+  const report = useRef(onUnavailable)
+  report.current = onUnavailable
+  const { id, ref, size, lastModified } = photo
+
+  useEffect(() => {
+    if (!enabled) {
+      setImage({ status: 'idle' })
+      return
+    }
+    let cancelled = false
+    let url: string | null = null
+    const abort = new AbortController()
+
+    /**
+     * 画像を表示する URL を作る。
+     * @param blob 表示する画像
+     */
+    const show = (blob: Blob) => {
+      url = URL.createObjectURL(blob)
+      setImage({ status: 'ready', url })
+    }
+
+    /**
+     * キャッシュを読む。読めなければキャッシュがないものとして扱う。
+     * @returns サムネイル。なければ `null`
+     */
+    const readCache = () => cache.getThumbnail(id).catch(() => null)
+
+    /** キャッシュか原本からサムネイルを用意する。 */
+    const load = async () => {
+      if (!readable) {
+        const cached = await readCache()
+        if (cancelled) return
+        if (cached && isFresh(cached, { size, lastModified })) {
+          show(new Blob([cached.bytes], { type: cached.type }))
+        } else {
+          setImage({ status: 'idle' })
+        }
+        return
+      }
+
+      const [result, cached] = await Promise.all([
+        source.readFile(ref).catch((): ReadResult => ({ ok: false, reason: 'unavailable' })),
+        readCache(),
+      ])
+      if (cancelled) return
+      if (!result.ok) {
+        setImage({ status: 'failed', reason: result.reason })
+        report.current(id, result.reason)
+        return
+      }
+      const { file } = result
+      if (cached && isFresh(cached, file)) {
+        show(new Blob([cached.bytes], { type: cached.type }))
+        return
+      }
+      const thumbnail = await makeThumbnail(file, abort.signal).catch(() => null)
+      if (cancelled) return
+      if (!thumbnail) {
+        show(file)
+        return
+      }
+      show(thumbnail)
+      const bytes = await thumbnail.arrayBuffer()
+      const record = { photoId: id, size: file.size, lastModified: file.lastModified, type: thumbnail.type, bytes }
+      // 保存できなくても（容量不足など）表示は続ける
+      await cache.putThumbnail({ ...record, createdAt: Date.now() }).catch(() => {})
+    }
+
+    setImage({ status: 'loading' })
+    load().catch(() => {
+      if (!cancelled) setImage({ status: 'failed', reason: 'unavailable' })
+    })
+    return () => {
+      cancelled = true
+      abort.abort()
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [source, cache, makeThumbnail, id, ref, size, lastModified, enabled, readable])
 
   return image
 }
