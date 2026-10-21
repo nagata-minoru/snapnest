@@ -2,10 +2,18 @@ import { useState } from 'react'
 import type { CollectionRecord, FolderRecord, PhotoRecord, ThumbnailCache } from '../db/libraryStore'
 import type { PhotoSource, UnavailableReason } from '../fs/photoSource'
 import { formatBytes, formatDate, formatDirectory, formatKind } from '../library/format'
+import type { ReconnectCandidate } from '../library/reconnect'
 import { PhotoImageView } from './PhotoCard'
 import { PhotoCollections } from './PhotoCollections'
+import { ReconnectCandidates } from './ReconnectCandidates'
 import { noThumbnail } from '../thumbnails/thumbnailMaker'
 import { usePhotoUrl, useThumbnailUrl } from './usePhotoUrl'
+
+/** 写真が端末内にあることを伝える案内 */
+const localNote = 'この写真は端末内にあります。snapnest は原本をコピー・アップロードしません。'
+
+/** 見つからない写真の原本を開けない理由を伝える案内 */
+const missingNote = 'snapnest は原本をコピーしていないため、元のファイルが見つかるまで原本を開けません。'
 
 /** 保存場所の下に添える説明の見た目 */
 const note = 'mt-0.5 block text-[9px] text-[#8a918b]'
@@ -56,11 +64,17 @@ const LocationStatus = ({ photo, accessible }: { photo: PhotoRecord; accessible:
  * @param props.onAddToCollection 写真をコレクションに入れるときに呼ばれる
  * @param props.onRemoveFromCollection 写真をコレクションから外すときに呼ばれる
  * @param props.onCreateCollection 新しいコレクションを作るときに呼ばれる
+ * @param props.candidates 見つからない写真につなぎ直す候補
+ * @param props.locationOf 写真の保存場所を表す文を返す
+ * @param props.isAccessible 写真のフォルダへのアクセスが許可されているかを返す
+ * @param props.onReconnect 見つからない写真を候補につなぎ直すときに呼ばれる。つなぎ直せたら `true` を返す
+ * @param props.onRemovePhoto 写真の記録をライブラリから外すときに呼ばれる。外せたら `true` を返す
  * @returns 詳細表示の React 要素
  */
 export const Inspector = ({
   source, thumbnails, photo, folder, accessible, scanning, onUnavailable, onRequestAccess, onRescan,
   collections, memberOf, onAddToCollection, onRemoveFromCollection, onCreateCollection,
+  candidates, locationOf, isAccessible, onReconnect, onRemovePhoto,
 }: {
   source: PhotoSource
   thumbnails: ThumbnailCache
@@ -76,6 +90,11 @@ export const Inspector = ({
   onAddToCollection: (collectionId: string, photoId: string) => Promise<void>
   onRemoveFromCollection: (collectionId: string, photoId: string) => Promise<void>
   onCreateCollection: (name: string) => Promise<CollectionRecord | null>
+  candidates: readonly ReconnectCandidate[]
+  locationOf: (photo: PhotoRecord) => string
+  isAccessible: (photo: PhotoRecord) => boolean
+  onReconnect: (missingId: string, targetId: string) => Promise<boolean>
+  onRemovePhoto: (photoId: string) => Promise<boolean>
 }) => {
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null)
   const readable = accessible && photo.status === 'available'
@@ -84,8 +103,7 @@ export const Inspector = ({
   const cached = useThumbnailUrl({
     source, cache: thumbnails, makeThumbnail: noThumbnail, photo, enabled: !readable, readable: false, onUnavailable,
   })
-  const directory = formatDirectory(photo.relativePath)
-  const location = [folder?.name ?? '不明なフォルダ', directory].filter(Boolean).join(' / ')
+  const location = [folder?.name ?? '不明なフォルダ', formatDirectory(photo.relativePath)].filter(Boolean).join(' / ')
 
   return <>
     <PhotoImageView
@@ -121,6 +139,22 @@ export const Inspector = ({
         <button className={action} onClick={() => onRequestAccess(folder.id)}>アクセスを許可</button>
       )}
     </section>
+    {photo.status === 'missing' && (
+      <section className={section}>
+        <p className={sectionLabel}>再接続の候補</p>
+        <ReconnectCandidates
+          source={source}
+          thumbnails={thumbnails}
+          photo={photo}
+          candidates={candidates}
+          locationOf={locationOf}
+          isAccessible={isAccessible}
+          onUnavailable={onUnavailable}
+          onReconnect={(targetId) => onReconnect(photo.id, targetId)}
+          onRemove={() => onRemovePhoto(photo.id)}
+        />
+      </section>
+    )}
     <section className={section}>
       <p className={sectionLabel}>コレクション</p>
       <PhotoCollections
@@ -142,7 +176,7 @@ export const Inspector = ({
       </dl>
     </section>
     <p className="mt-[18px] rounded-md bg-note p-2.5 text-[9px] leading-relaxed text-note-ink">
-      この写真は端末内にあります。snapnest は原本をコピー・アップロードしません。
+      {photo.status === 'missing' ? missingNote : localNote}
     </p>
   </>
 }
