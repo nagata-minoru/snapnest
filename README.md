@@ -27,6 +27,7 @@
 | 用途 | 採用予定 |
 | --- | --- |
 | UI | React + TypeScript |
+| スタイル | Tailwind CSS v4（画面幅に応じてサイドバーと詳細表示を重ねて開く） |
 | 開発・ビルド | Vite |
 | ローカルファイルへのアクセス | File System Access API（抽象化レイヤー経由） |
 | メタデータ・コレクション情報 | IndexedDB |
