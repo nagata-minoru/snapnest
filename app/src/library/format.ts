@@ -45,3 +45,13 @@ export const formatKind = (name: string) => {
  * @returns 「2026 / 10」のような文字列。直下のファイルなら空文字列
  */
 export const formatDirectory = (relativePath: string) => relativePath.split('/').slice(0, -1).join(' / ')
+
+/**
+ * 写真の保存場所を、フォルダ名と相対パスで表す。
+ * @param folderName フォルダ名。フォルダが見つからなければ `undefined`
+ * @param relativePath フォルダからの相対パス
+ * @returns 「Pictures / trip / station.png」のような文字列
+ */
+export const formatLocation = (folderName: string | undefined, relativePath: string) => (
+  [folderName ?? '不明なフォルダ', ...relativePath.split('/')].join(' / ')
+)

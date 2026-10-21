@@ -5,6 +5,7 @@ import {
 } from '../db/libraryStore'
 import type { AccessPermission, FolderRef, PhotoSource, UnavailableReason } from '../fs/photoSource'
 import { validateCollectionName } from './collections'
+import { formatLocation } from './format'
 import { ScanError, scanFolder } from './scanFolder'
 
 /** ライブラリの読み込み状態 */
@@ -39,6 +40,10 @@ export type Library = {
   deleteCollection: (collectionId: string) => Promise<boolean>
   addToCollection: (collectionId: string, photoId: string) => Promise<void>
   removeFromCollection: (collectionId: string, photoId: string) => Promise<void>
+  /** 見つからない写真を別の写真につなぎ直す。保存できなければ通知して `false` を返す */
+  reconnectPhoto: (missingId: string, targetId: string) => Promise<boolean>
+  /** 写真の記録をライブラリから外す。原本には触れない。保存できなければ通知して `false` を返す */
+  removePhoto: (photoId: string) => Promise<boolean>
   dismissNotice: () => void
 }
 
@@ -393,6 +398,68 @@ export const useLibrary = (source: PhotoSource, openStore: () => Promise<Library
     )))
   }, [])
 
+  /**
+   * 見つからない写真を、利用者が選んだ写真につなぎ直す。
+   * コレクションへの所属を引き継ぎ、登録日時は古い方を残し、見つからない写真の記録を外す。
+   * @param missingId 見つからない写真の ID
+   * @param targetId つなぎ直す先の写真の ID
+   * @returns つなぎ直せたら `true`
+   */
+  const reconnectPhoto = useCallback(async (missingId: string, targetId: string) => {
+    const store = storeRef.current
+    const missing = latest.current.photos.find((photo) => photo.id === missingId)
+    const target = latest.current.photos.find((photo) => photo.id === targetId)
+    if (!store || !missing || !target || missing.status !== 'missing' || target.status !== 'available') return false
+    const addedAt = Math.min(target.addedAt, missing.addedAt)
+    const updated: PhotoRecord = { ...target, addedAt, updatedAt: Date.now() }
+    try {
+      await store.reconnectPhoto(missingId, updated)
+    } catch {
+      setNotice('つなぎ直せませんでした。')
+      return false
+    }
+    setPhotos((current) => mergePhotos(current.filter((photo) => photo.id !== missingId), [updated]))
+    setMemberships((current) => {
+      const joined = new Set(current.filter((item) => item.photoId === targetId).map((item) => item.collectionId))
+      return current.flatMap((item) => {
+        if (item.photoId !== missingId) return [item]
+        return joined.has(item.collectionId) ? [] : [{ ...item, photoId: targetId }]
+      })
+    })
+    const { folders } = latest.current
+    /**
+     * 写真の保存場所を表す文を作る。
+     * @param photo 写真
+     * @returns 「Pictures / trip / station.png」のような文
+     */
+    const locationOf = (photo: PhotoRecord) => (
+      formatLocation(folders.find((folder) => folder.id === photo.folderId)?.name, photo.relativePath)
+    )
+    setNotice(`「${locationOf(missing)}」を「${locationOf(target)}」につなぎ直しました。`)
+    return true
+  }, [])
+
+  /**
+   * 写真の記録を、コレクションへの所属・サムネイルとまとめてライブラリから外す。
+   * @param photoId 外す写真の ID
+   * @returns 外せたら `true`
+   */
+  const removePhoto = useCallback(async (photoId: string) => {
+    const store = storeRef.current
+    const photo = latest.current.photos.find((item) => item.id === photoId)
+    if (!store || !photo) return false
+    try {
+      await store.deletePhoto(photoId)
+    } catch {
+      setNotice('ライブラリから外せませんでした。')
+      return false
+    }
+    setPhotos((current) => current.filter((item) => item.id !== photoId))
+    setMemberships((current) => current.filter((item) => item.photoId !== photoId))
+    setNotice(`「${photo.name}」をライブラリから外しました。写真の原本には触れていません。`)
+    return true
+  }, [])
+
   /** 通知を閉じる。 */
   const dismissNotice = useCallback(() => setNotice(null), [])
 
@@ -416,6 +483,7 @@ export const useLibrary = (source: PhotoSource, openStore: () => Promise<Library
   return {
     status, persistent, folders, photos, collections, memberships, permissions, scan, notice, thumbnails,
     addFolder, rescan, requestAccess, reportUnavailable,
-    createCollection, renameCollection, deleteCollection, addToCollection, removeFromCollection, dismissNotice,
+    createCollection, renameCollection, deleteCollection, addToCollection, removeFromCollection,
+    reconnectPhoto, removePhoto, dismissNotice,
   }
 }

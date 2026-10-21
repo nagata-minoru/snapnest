@@ -136,6 +136,55 @@ describe.each([{
   })
 })
 
+describe.each([{
+  name: 'IndexedDB', open: () => openLibraryStore(),
+}, {
+  name: 'メモリ', open: async () => createMemoryLibraryStore(),
+}])('$name の再接続', ({ open }: { open: () => Promise<LibraryStore> }) => {
+  const missing: PhotoRecord = { ...photo, status: 'missing' }
+  const moved: PhotoRecord = { ...photo, id: 'folder:2026/morning.jpg', relativePath: '2026/morning.jpg' }
+
+  it('所属を引き継ぎ、見つからない写真の記録とサムネイルを消す', async () => {
+    const store = await open()
+    await store.putFolder(folder)
+    await store.putPhotos([missing, moved])
+    await store.putThumbnail(await thumbnailOf('old'))
+    await store.putCollection(collectionOf('trip', '旅行'))
+    await store.putCollection(collectionOf('best', 'お気に入り'))
+    await store.putMembership(membershipOf('trip'))
+    await store.putMembership(membershipOf('best'))
+    await store.putMembership({ ...membershipOf('best', moved.id), addedAt: 1 })
+
+    await store.reconnectPhoto(missing.id, { ...moved, addedAt: 1 })
+
+    const snapshot = await store.load()
+    expect(snapshot.photos).toEqual([{ ...moved, addedAt: 1 }])
+    expect(snapshot.memberships.sort((a, b) => a.collectionId.localeCompare(b.collectionId))).toEqual([
+      { ...membershipOf('best', moved.id), addedAt: 1 }, membershipOf('trip', moved.id),
+    ])
+    expect(await store.getThumbnail(missing.id)).toBeNull()
+    store.close()
+  })
+
+  it('写真の記録を、所属・サムネイルとまとめて消し、ほかの写真は残す', async () => {
+    const store = await open()
+    await store.putFolder(folder)
+    await store.putPhotos([missing, moved])
+    await store.putThumbnail(await thumbnailOf('old'))
+    await store.putCollection(collectionOf('trip', '旅行'))
+    await store.putMembership(membershipOf('trip'))
+    await store.putMembership(membershipOf('trip', moved.id))
+
+    await store.deletePhoto(missing.id)
+
+    const snapshot = await store.load()
+    expect(snapshot.photos).toEqual([moved])
+    expect(snapshot.memberships).toEqual([membershipOf('trip', moved.id)])
+    expect(await store.getThumbnail(missing.id)).toBeNull()
+    store.close()
+  })
+})
+
 describe('openLibraryStore', () => {
   it('バージョン 1 のデータベースを移行し、既存のフォルダと写真を残す', async () => {
     const old = await openDB(DB_NAME, 1, {

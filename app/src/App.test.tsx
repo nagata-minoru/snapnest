@@ -142,6 +142,32 @@ describe('App', () => {
       expect(photoTitles()).toEqual(['new.jpg', 'morning.jpg', 'window.webp', 'station.png'])
     })
 
+    it('更新日時も相対パスも同じ写真は、開き直してもフォルダ名順に並べる', async () => {
+      const memory = createMemorySource()
+      memory.createFolder('zoo', 'Zoo', { 'same.jpg': { lastModified: october(18) } })
+      memory.createFolder('archive', 'Archive', { 'same.jpg': { lastModified: october(18) } })
+      memory.queuePick('zoo')
+      memory.queuePick('archive')
+      const first = await setup(memory.source)
+      await openFolder(first.user)
+      await first.user.click(screen.getByRole('button', { name: '通知を閉じる' }))
+      await openFolder(first.user)
+
+      /**
+       * 一覧の先頭の写真を選び、詳細表示に出た保存場所を返す。
+       * @param user 操作用の userEvent
+       * @returns 保存場所の文
+       */
+      const firstLocation = async (user: ReturnType<typeof userEvent.setup>) => {
+        await user.click(screen.getAllByRole('button', { name: /same\.jpg/ })[0])
+        return screen.getByRole('complementary', { name: '写真の詳細' }).querySelector('strong')?.textContent
+      }
+      expect(await firstLocation(first.user)).toBe('Archive')
+      first.unmount()
+      const second = await setup(memory.source)
+      expect(await firstLocation(second.user)).toBe('Archive')
+    })
+
     it('非対応ブラウザでは案内を表示する', async () => {
       const { user } = await setup(createUnsupportedSource())
 
@@ -289,6 +315,144 @@ describe('App', () => {
 
       await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('3 枚の写真を読み込みました。'))
       expect(within(nav()).getByRole('button', { name: /再接続が必要/ })).toHaveTextContent('0')
+    })
+  })
+
+  describe('再接続', () => {
+    /**
+     * Pictures を開き、station.png を Trip に入れてから、別の場所へ移して再読み込みする。
+     * @param movedTo 移動先の相対パス
+     * @returns setup の戻り値と、テスト用のフォルダ
+     */
+    const moveStation = async (...movedTo: string[]) => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const app = await setup(memory.source)
+      await openFolder(app.user)
+      await app.user.click(screen.getByRole('button', { name: 'コレクションを作る' }))
+      await app.user.type(screen.getByRole('textbox', { name: 'コレクション名' }), 'Trip')
+      await app.user.click(screen.getByRole('button', { name: '作成' }))
+      await app.user.click(within(nav()).getByRole('button', { name: /すべての写真/ }))
+      await app.user.click(screen.getByRole('button', { name: /station\.png/ }))
+      await app.user.click(within(inspector()).getByRole('button', { name: '＋ 追加' }))
+      await app.user.click(within(inspector()).getByRole('button', { name: 'Trip' }))
+
+      const files = memory.folder('pictures').files
+      const station = files.get('trip/station.png')!
+      files.delete('trip/station.png')
+      for (const path of movedTo) files.set(path, station)
+      await app.user.click(within(nav()).getByRole('button', { name: /^Pictures/ }))
+      await app.user.click(screen.getByRole('button', { name: /^↻ 再読み込み/ }))
+      await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('1 枚が見つからなくなりました。'))
+      await app.user.click(within(nav()).getByRole('button', { name: /再接続が必要/ }))
+      return { ...app, memory }
+    }
+
+    /**
+     * 詳細表示を取得する。
+     * @returns 詳細表示の要素
+     */
+    const inspector = () => screen.getByRole('complementary', { name: '写真の詳細' })
+
+    /**
+     * 再接続の候補の一覧を取得する。
+     * @returns 候補の一覧の要素
+     */
+    const candidateList = () => within(inspector()).getByRole('list', { name: '再接続の候補' })
+
+    it('移動したファイルを候補に出し、確かめてからつなぎ直すとコレクションを引き継ぐ', async () => {
+      const { user, photoTitles, inspectorTitle } = await moveStation('2026/station.png')
+      const moved = 'Pictures / 2026 / station.png'
+
+      expect(within(nav()).getByRole('button', { name: /再接続が必要/ })).toHaveTextContent('候補あり')
+      expect(screen.getByText(/1 枚に再接続の候補があります/)).toBeInTheDocument()
+      expect(photoTitles()).toEqual(['station.png'])
+      expect(inspectorTitle()).toBe('station.png')
+      expect(within(candidateList()).getByText(moved)).toBeInTheDocument()
+      expect(within(candidateList()).getByText('名前・サイズ・更新日時が一致')).toBeInTheDocument()
+
+      await user.click(within(candidateList()).getByRole('button', { name: `「${moved}」につなぐ` }))
+      await user.click(within(within(inspector()).getByRole('alert')).getByRole('button', { name: 'やめる' }))
+      expect(within(inspector()).queryByRole('alert')).not.toBeInTheDocument()
+
+      await user.click(within(candidateList()).getByRole('button', { name: `「${moved}」につなぐ` }))
+      await user.click(within(inspector()).getByRole('button', { name: 'つなぎ直す' }))
+
+      expect(await screen.findByRole('status')).toHaveTextContent(
+        '「Pictures / trip / station.png」を「Pictures / 2026 / station.png」につなぎ直しました。',
+      )
+      expect(within(nav()).getByRole('button', { name: /再接続が必要/ })).toHaveTextContent(/^⌁再接続が必要0$/)
+      expect(screen.getByText('再接続が必要な写真はありません')).toBeInTheDocument()
+
+      await user.click(within(nav()).getByRole('button', { name: /Trip/ }))
+      expect(photoTitles()).toEqual(['station.png'])
+      expect(within(inspector()).getByText('Pictures / 2026')).toBeInTheDocument()
+      expect(within(nav()).getByRole('button', { name: /すべての写真/ })).toHaveTextContent(/3$/)
+    })
+
+    it('つなぎ直した結果は開き直しても残る', async () => {
+      const { user, unmount, memory } = await moveStation('2026/station.png')
+      await user.click(within(candidateList()).getByRole('button', { name: /につなぐ$/ }))
+      await user.click(within(inspector()).getByRole('button', { name: 'つなぎ直す' }))
+      await screen.findByText(/につなぎ直しました/)
+      unmount()
+
+      const reopened = await setup(memory.source)
+      await reopened.user.click(within(nav()).getByRole('button', { name: /Trip/ }))
+
+      expect(reopened.photoTitles()).toEqual(['station.png'])
+      expect(within(nav()).getByRole('button', { name: /再接続が必要/ })).toHaveTextContent(/0$/)
+    })
+
+    it('候補が複数あれば、自動では選ばずに見比べるよう伝える', async () => {
+      const { user } = await moveStation('2026/station.png', 'backup/station.png')
+
+      expect(within(inspector()).getByText(/^候補が複数あります。/)).toBeInTheDocument()
+      expect(within(candidateList()).getAllByRole('listitem')).toHaveLength(2)
+      expect(within(nav()).getByRole('button', { name: /再接続が必要/ })).toHaveTextContent(/1$/)
+
+      await user.click(within(candidateList()).getByRole('button', { name: /「Pictures \/ backup \/ station\.png」/ }))
+      await user.click(within(inspector()).getByRole('button', { name: 'つなぎ直す' }))
+
+      expect(await screen.findByRole('status')).toHaveTextContent(
+        '「Pictures / trip / station.png」を「Pictures / backup / station.png」につなぎ直しました。',
+      )
+      expect(within(nav()).getByRole('button', { name: /すべての写真/ })).toHaveTextContent(/4$/)
+    })
+
+    it('一覧に見えている写真へつなぎ直したら、その写真を選んだままにする', async () => {
+      const { user, inspectorTitle } = await moveStation('2026/station.png')
+      await user.click(within(nav()).getByRole('button', { name: /すべての写真/ }))
+      const missingCard = screen.getAllByRole('button', { name: /station\.png/ })
+        .find((card) => within(card).queryByText('見つかりません'))
+      await user.click(missingCard!)
+      expect(within(inspector()).getByText('Pictures / trip')).toBeInTheDocument()
+
+      await user.click(within(candidateList()).getByRole('button', { name: /につなぐ$/ }))
+      await user.click(within(inspector()).getByRole('button', { name: 'つなぎ直す' }))
+      await screen.findByText(/につなぎ直しました/)
+
+      expect(inspectorTitle()).toBe('station.png')
+      expect(within(inspector()).getByText('Pictures / 2026')).toBeInTheDocument()
+    })
+
+    it('候補がなければ探し方を案内し、確かめてからライブラリから外せる', async () => {
+      const { user, photoTitles } = await moveStation()
+
+      expect(within(inspector()).getByText(/候補は見つかりませんでした/)).toBeInTheDocument()
+      expect(within(inspector()).getByText(/元のファイルが見つかるまで原本を開けません/)).toBeInTheDocument()
+      expect(within(inspector()).queryByText(/端末内にあります/)).not.toBeInTheDocument()
+      expect(within(nav()).getByRole('button', { name: /再接続が必要/ })).not.toHaveTextContent('候補あり')
+
+      await user.click(within(inspector()).getByRole('button', { name: 'ライブラリから外す' }))
+      expect(within(inspector()).getByRole('alert')).toHaveTextContent('写真の原本には触れません。')
+      await user.click(within(inspector()).getByRole('button', { name: '外す' }))
+
+      expect(await screen.findByRole('status')).toHaveTextContent('「station.png」をライブラリから外しました。')
+      expect(photoTitles()).toEqual([])
+      await user.click(within(nav()).getByRole('button', { name: /Trip/ }))
+      expect(within(nav()).getByRole('button', { name: /Trip/ })).toHaveTextContent(/0$/)
+      expect(within(nav()).getByRole('button', { name: /すべての写真/ })).toHaveTextContent(/2$/)
     })
   })
 

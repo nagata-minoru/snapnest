@@ -5,6 +5,8 @@ import { PhotoCard } from './components/PhotoCard'
 import type { LibraryStore, PhotoRecord } from './db/libraryStore'
 import type { PhotoSource } from './fs/photoSource'
 import { byCollectionName, groupMemberships, matchesSearch, searchTerms } from './library/collections'
+import { formatLocation } from './library/format'
+import { findReconnectCandidates, type ReconnectCandidate } from './library/reconnect'
 import { useLibrary } from './library/useLibrary'
 import { noThumbnail, type ThumbnailMaker } from './thumbnails/thumbnailMaker'
 
@@ -20,14 +22,20 @@ type CollectionEdit = 'rename' | 'delete' | null
 /** どのコレクションにも入っていない写真の所属先 */
 const noMembers: ReadonlySet<string> = new Set()
 
+/** 再接続の候補がない写真の候補 */
+const noCandidates: readonly ReconnectCandidate[] = []
+
 /**
- * 写真を新しい順に並べるための比較関数。更新日時が同じなら相対パス順にする。
- * @param a 比べる写真
- * @param b 比べる写真
- * @returns 並び順を表す数
+ * 写真を新しい順に並べる比較関数を作る。
+ * 更新日時が同じなら相対パス順、それも同じならフォルダ名順にし、最後は ID で並びを固定する。
+ * @param folderNames フォルダの ID ごとのフォルダ名
+ * @returns 2 枚の写真の並び順を表す数を返す比較関数
  */
-const byNewest = (a: PhotoRecord, b: PhotoRecord) => (
-  b.lastModified - a.lastModified || a.relativePath.localeCompare(b.relativePath)
+const byNewest = (folderNames: ReadonlyMap<string, string>) => (a: PhotoRecord, b: PhotoRecord) => (
+  b.lastModified - a.lastModified ||
+  a.relativePath.localeCompare(b.relativePath) ||
+  (folderNames.get(a.folderId) ?? '').localeCompare(folderNames.get(b.folderId) ?? '') ||
+  a.id.localeCompare(b.id)
 )
 
 /**
@@ -151,24 +159,24 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
   const [navOpen, setNavOpen] = useState(false)
   const [inspectorOpen, setInspectorOpen] = useState(false)
 
-  const sortedPhotos = useMemo(() => [...library.photos].sort(byNewest), [library.photos])
+  const folderNames = useMemo(() => new Map(folders.map((folder) => [folder.id, folder.name])), [folders])
+  const sortedPhotos = useMemo(() => [...library.photos].sort(byNewest(folderNames)), [library.photos, folderNames])
   const sortedCollections = useMemo(() => [...library.collections].sort(byCollectionName), [library.collections])
   const { collectionsByPhoto, photosByCollection } = useMemo(
     () => groupMemberships(library.memberships, new Set(library.photos.map((photo) => photo.id))),
     [library.memberships, library.photos],
   )
   const terms = useMemo(() => searchTerms(deferredQuery), [deferredQuery])
-  const visiblePhotos = useMemo(() => {
-    const folderNames = new Map(folders.map((folder) => [folder.id, folder.name]))
-    return sortedPhotos.filter((photo) => (
-      isInView(photo, view, photosByCollection) &&
-      matchesSearch(photo, folderNames.get(photo.folderId) ?? '', terms)
-    ))
-  }, [sortedPhotos, view, photosByCollection, folders, terms])
+  const visiblePhotos = useMemo(() => sortedPhotos.filter((photo) => (
+    isInView(photo, view, photosByCollection) &&
+    matchesSearch(photo, folderNames.get(photo.folderId) ?? '', terms)
+  )), [sortedPhotos, view, photosByCollection, folderNames, terms])
   const missingCount = useMemo(
     () => library.photos.filter((photo) => photo.status === 'missing').length,
     [library.photos],
   )
+  const candidatesByPhoto = useMemo(() => findReconnectCandidates(library.photos), [library.photos])
+  const withCandidatesCount = [...candidatesByPhoto.values()].filter((candidates) => candidates.length > 0).length
   const countsByFolder = useMemo(() => {
     const counts = new Map<string, number>()
     for (const photo of library.photos) counts.set(photo.folderId, (counts.get(photo.folderId) ?? 0) + 1)
@@ -254,6 +262,25 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
    * @returns アクセスが許可されていれば `true`
    */
   const isAccessible = (photo: PhotoRecord) => permissions[photo.folderId] === 'granted'
+
+  /**
+   * 写真の保存場所を、フォルダ名と相対パスで表す。
+   * @param photo 写真
+   * @returns 「Pictures / trip / station.png」のような文
+   */
+  const locationOf = (photo: PhotoRecord) => formatLocation(folderNames.get(photo.folderId), photo.relativePath)
+
+  /**
+   * 見つからない写真をつなぎ直し、つなぎ直せたら移動先の写真を選ぶ。
+   * @param missingId 見つからない写真の ID
+   * @param targetId つなぎ直す先の写真の ID
+   * @returns つなぎ直せたら `true`
+   */
+  const reconnectPhoto = async (missingId: string, targetId: string) => {
+    const done = await library.reconnectPhoto(missingId, targetId)
+    if (done) setSelectedId(targetId)
+    return done
+  }
 
   /**
    * サイドバーの下部に出す状態の説明を作る。
@@ -360,6 +387,11 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
         onAddToCollection={library.addToCollection}
         onRemoveFromCollection={library.removeFromCollection}
         onCreateCollection={library.createCollection}
+        candidates={candidatesByPhoto.get(selectedPhoto.id) ?? noCandidates}
+        locationOf={locationOf}
+        isAccessible={isAccessible}
+        onReconnect={reconnectPhoto}
+        onRemovePhoto={library.removePhoto}
       />
     )
   }
@@ -406,6 +438,7 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
           <NavItem
             icon="⌁"
             count={missingCount}
+            warning={withCandidatesCount ? '候補あり' : undefined}
             active={isActive({ kind: 'missing' })}
             onClick={() => chooseView({ kind: 'missing' })}
           >
@@ -558,6 +591,11 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
         {!source.supported && (
           <div className={banner} role="alert">
             このブラウザはフォルダの参照に対応していません。snapnest は現在 Chrome を対象にしています。
+          </div>
+        )}
+        {view.kind === 'missing' && withCandidatesCount > 0 && (
+          <div className={banner}>
+            {withCandidatesCount} 枚に再接続の候補があります。写真を選ぶと、候補を見比べてつなぎ直せます。
           </div>
         )}
         {foldersNeedingAccess.map((folder) => (

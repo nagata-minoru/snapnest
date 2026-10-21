@@ -145,6 +145,20 @@ export interface LibraryStore {
    */
   deleteMembership(collectionId: string, photoId: string): Promise<void>
 
+  /**
+   * 見つからない写真を、別の写真につなぎ直す。コレクションへの所属を引き継ぎ、見つからない写真の記録と
+   * サムネイルを削除する。途中で失敗したときは何も変えない。
+   * @param missingId 見つからない写真の ID
+   * @param target つなぎ直す先の写真。保存し直す
+   */
+  reconnectPhoto(missingId: string, target: PhotoRecord): Promise<void>
+
+  /**
+   * 写真の記録を、コレクションへの所属・サムネイルとまとめて削除する。写真の原本には触れない。
+   * @param photoId 削除する写真の ID
+   */
+  deletePhoto(photoId: string): Promise<void>
+
   /** データベースとの接続を閉じる。 */
   close(): void
 }
@@ -408,6 +422,36 @@ export const createMemoryLibraryStore = (): LibraryStore => {
       memberships.delete(membershipKey(collectionId, photoId))
     },
 
+    /**
+     * 見つからない写真の所属を引き継ぎ、記録とサムネイルを削除する。
+     * つなぎ直す先がすでに同じコレクションに入っていれば、先の所属を残す。
+     * @param missingId 見つからない写真の ID
+     * @param target つなぎ直す先の写真
+     */
+    reconnectPhoto: async (missingId, target) => {
+      for (const [key, membership] of memberships) {
+        if (membership.photoId !== missingId) continue
+        memberships.delete(key)
+        const movedKey = membershipKey(membership.collectionId, target.id)
+        if (!memberships.has(movedKey)) memberships.set(movedKey, { ...membership, photoId: target.id })
+      }
+      photos.set(target.id, target)
+      photos.delete(missingId)
+      thumbnails.delete(missingId)
+    },
+
+    /**
+     * 写真の記録を、所属・サムネイルとまとめて削除する。
+     * @param photoId 削除する写真の ID
+     */
+    deletePhoto: async (photoId) => {
+      for (const [key, membership] of memberships) {
+        if (membership.photoId === photoId) memberships.delete(key)
+      }
+      photos.delete(photoId)
+      thumbnails.delete(photoId)
+    },
+
     /** 何もしない。閉じる接続がないため。 */
     close: () => {},
   }
@@ -521,6 +565,48 @@ export const openLibraryStore = async (name = DB_NAME): Promise<LibraryStore> =>
      */
     deleteMembership: async (collectionId, photoId) => {
       await db.delete('memberships', [collectionId, photoId])
+    },
+
+    /**
+     * 見つからない写真の所属を引き継ぎ、記録とサムネイルを 1 つのトランザクションで削除する。
+     * つなぎ直す先がすでに同じコレクションに入っていれば、先の所属を残す。
+     * @param missingId 見つからない写真の ID
+     * @param target つなぎ直す先の写真
+     */
+    reconnectPhoto: async (missingId, target) => {
+      const tx = db.transaction(['photos', 'memberships', 'thumbnails'], 'readwrite')
+      const memberships = tx.objectStore('memberships')
+      const [moving, existing] = await Promise.all([
+        memberships.index('byPhoto').getAll(missingId),
+        memberships.index('byPhoto').getAllKeys(target.id),
+      ])
+      const joined = new Set(existing.map(([collectionId]) => collectionId))
+      await Promise.all([
+        ...moving.flatMap((membership) => [
+          memberships.delete([membership.collectionId, missingId]),
+          ...(joined.has(membership.collectionId) ? [] : [memberships.put({ ...membership, photoId: target.id })]),
+        ]),
+        tx.objectStore('photos').put(target),
+        tx.objectStore('photos').delete(missingId),
+        tx.objectStore('thumbnails').delete(missingId),
+        tx.done,
+      ])
+    },
+
+    /**
+     * 写真の記録を、所属・サムネイルとまとめて 1 つのトランザクションで削除する。
+     * @param photoId 削除する写真の ID
+     */
+    deletePhoto: async (photoId) => {
+      const tx = db.transaction(['photos', 'memberships', 'thumbnails'], 'readwrite')
+      const memberships = tx.objectStore('memberships')
+      const keys = await memberships.index('byPhoto').getAllKeys(photoId)
+      await Promise.all([
+        ...keys.map((key) => memberships.delete(key)),
+        tx.objectStore('photos').delete(photoId),
+        tx.objectStore('thumbnails').delete(photoId),
+        tx.done,
+      ])
     },
 
     /** データベースとの接続を閉じる。 */
