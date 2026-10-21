@@ -2,7 +2,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { FileRef, FolderRef } from '../fs/photoSource'
 
 export const DB_NAME = 'snapnest'
-export const DB_VERSION = 1
+export const DB_VERSION = 2
 
 /** 登録済みフォルダ。写真の原本ではなく、フォルダへの参照だけを持つ。 */
 export type FolderRecord = {
@@ -33,9 +33,27 @@ export type PhotoRecord = {
   updatedAt: number
 }
 
+/**
+ * 写真のサムネイル。原本を縮小して作り直した画像で、原本そのものは保存しない。
+ * 原本のサイズか更新日時が変わったら作り直す。
+ */
+export type ThumbnailRecord = {
+  photoId: string
+  /** 作ったときの原本のサイズ */
+  size: number
+  /** 作ったときの原本の更新日時 */
+  lastModified: number
+  /** 画像の MIME タイプ */
+  type: string
+  /** 画像の内容。Blob はブラウザによって保存できないことがあるため ArrayBuffer で持つ */
+  bytes: ArrayBuffer
+  createdAt: number
+}
+
 interface LibrarySchema extends DBSchema {
   folders: { key: string; value: FolderRecord }
   photos: { key: string; value: PhotoRecord; indexes: { byFolder: string } }
+  thumbnails: { key: string; value: ThumbnailRecord }
 }
 
 /** IndexedDB から読み込んだライブラリの内容。 */
@@ -66,9 +84,25 @@ export interface LibraryStore {
    */
   putPhotos(photos: PhotoRecord[]): Promise<void>
 
+  /**
+   * 写真のサムネイルを読む。壊れたレコードはないものとして扱う。
+   * @param photoId 写真の ID
+   * @returns サムネイル。なければ `null`
+   */
+  getThumbnail(photoId: string): Promise<ThumbnailRecord | null>
+
+  /**
+   * 写真のサムネイルを保存する。同じ写真のものがあれば置き換える。
+   * @param thumbnail 保存するサムネイル
+   */
+  putThumbnail(thumbnail: ThumbnailRecord): Promise<void>
+
   /** データベースとの接続を閉じる。 */
   close(): void
 }
+
+/** サムネイルのキャッシュ。{@link LibraryStore} のうちサムネイルを扱う部分 */
+export type ThumbnailCache = Pick<LibraryStore, 'getThumbnail' | 'putThumbnail'>
 
 /**
  * 値が文字列をキーに持つオブジェクトか判定する。
@@ -119,6 +153,23 @@ export const parsePhotoRecord = (value: unknown): PhotoRecord | null => {
 }
 
 /**
+ * IndexedDB から読んだ値をサムネイルとして検証する。
+ * ArrayBuffer は別の realm で作られることがあるため、`instanceof` ではなく型のタグで判定する。
+ * @param value 読んだ値
+ * @returns サムネイル。形が合わなければ `null`
+ */
+export const parseThumbnailRecord = (value: unknown): ThumbnailRecord | null => {
+  if (!isObject(value)) return null
+  const { photoId, size, lastModified, type, bytes, createdAt } = value
+  if (
+    typeof photoId !== 'string' || !isFiniteNumber(size) || !isFiniteNumber(lastModified) ||
+    typeof type !== 'string' || Object.prototype.toString.call(bytes) !== '[object ArrayBuffer]' ||
+    !isFiniteNumber(createdAt)
+  ) return null
+  return { photoId, size, lastModified, type, bytes: bytes as ArrayBuffer, createdAt }
+}
+
+/**
  * データベースのスキーマを作成・移行する。
  * @param db 開いているデータベース
  * @param oldVersion 移行前のバージョン。新規作成なら `0`
@@ -129,6 +180,8 @@ const upgrade = (db: IDBPDatabase<LibrarySchema>, oldVersion: number) => {
     const photos = db.createObjectStore('photos', { keyPath: 'id' })
     photos.createIndex('byFolder', 'folderId')
   }
+  // バージョン 2 でサムネイルのキャッシュを追加した。既存のフォルダと写真はそのまま使える
+  if (oldVersion < 2) db.createObjectStore('thumbnails', { keyPath: 'photoId' })
 }
 
 /**
@@ -139,6 +192,7 @@ const upgrade = (db: IDBPDatabase<LibrarySchema>, oldVersion: number) => {
 export const createMemoryLibraryStore = (): LibraryStore => {
   const folders = new Map<string, FolderRecord>()
   const photos = new Map<string, PhotoRecord>()
+  const thumbnails = new Map<string, ThumbnailRecord>()
   return {
     /**
      * 保存済みのフォルダと写真をすべて返す。
@@ -162,6 +216,21 @@ export const createMemoryLibraryStore = (): LibraryStore => {
       for (const photo of records) photos.set(photo.id, photo)
     },
 
+    /**
+     * 写真のサムネイルを返す。
+     * @param photoId 写真の ID
+     * @returns サムネイル。なければ `null`
+     */
+    getThumbnail: async (photoId) => thumbnails.get(photoId) ?? null,
+
+    /**
+     * 写真のサムネイルを保存する。同じ写真のものがあれば置き換える。
+     * @param thumbnail 保存するサムネイル
+     */
+    putThumbnail: async (thumbnail) => {
+      thumbnails.set(thumbnail.photoId, thumbnail)
+    },
+
     /** 何もしない。閉じる接続がないため。 */
     close: () => {},
   }
@@ -180,6 +249,11 @@ export const openLibraryStore = async (name = DB_NAME): Promise<LibraryStore> =>
      * @param oldVersion 移行前のバージョン
      */
     upgrade: (database, oldVersion) => upgrade(database, oldVersion),
+
+    /**
+     * 別のタブが新しいバージョンで開こうとしたら、移行を妨げないよう接続を閉じる。
+     */
+    blocking: () => db.close(),
   })
 
   return {
@@ -218,6 +292,21 @@ export const openLibraryStore = async (name = DB_NAME): Promise<LibraryStore> =>
     putPhotos: async (photos) => {
       const tx = db.transaction('photos', 'readwrite')
       await Promise.all([...photos.map((photo) => tx.store.put(photo)), tx.done])
+    },
+
+    /**
+     * 写真のサムネイルを読む。壊れたレコードはないものとして扱う。
+     * @param photoId 写真の ID
+     * @returns サムネイル。なければ `null`
+     */
+    getThumbnail: async (photoId) => parseThumbnailRecord(await db.get('thumbnails', photoId)),
+
+    /**
+     * 写真のサムネイルを保存する。同じ写真のものがあれば置き換える。
+     * @param thumbnail 保存するサムネイル
+     */
+    putThumbnail: async (thumbnail) => {
+      await db.put('thumbnails', thumbnail)
     },
 
     /** データベースとの接続を閉じる。 */

@@ -1,11 +1,12 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { openDB } from 'idb'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { App } from './App'
 import { DB_NAME, openLibraryStore, type LibraryStore } from './db/libraryStore'
 import { createUnsupportedSource, type PhotoSource } from './fs/photoSource'
 import { createMemorySource } from './test/memorySource'
+import type { ThumbnailMaker } from './thumbnails/thumbnailMaker'
 
 /**
  * 2026年10月の指定日の正午（UTC）を返す。どのタイムゾーンでも日付がずれないようにする。
@@ -35,11 +36,18 @@ const createPicturesSource = () => {
  * App を描画し、操作用の userEvent と画面の状態を読む関数を用意する。
  * @param source ファイルアクセスの抽象化レイヤー
  * @param openStore メタデータの保存先を開く関数
+ * @param makeThumbnail 原本からサムネイルを作る関数。省略するとサムネイルを作らない
  * @returns `user`、`photoTitles`、`inspectorTitle`、`unmount` をまとめたオブジェクト
  */
-const setup = async (source: PhotoSource, openStore: () => Promise<LibraryStore> = () => openLibraryStore()) => {
+const setup = async (
+  source: PhotoSource,
+  openStore: () => Promise<LibraryStore> = () => openLibraryStore(),
+  makeThumbnail?: ThumbnailMaker,
+) => {
   const user = userEvent.setup()
-  const { container, unmount } = render(<App source={source} openStore={openStore} />)
+  const { container, unmount } = render(
+    <App source={source} openStore={openStore} makeThumbnail={makeThumbnail} />,
+  )
   await waitFor(() => expect(screen.queryByText('ライブラリを読み込み中…')).not.toBeInTheDocument())
   /**
    * 写真一覧に表示中の写真のタイトルを取得する。
@@ -281,6 +289,172 @@ describe('App', () => {
 
       await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('3 枚の写真を読み込みました。'))
       expect(within(nav()).getByRole('button', { name: /再接続が必要/ })).toHaveTextContent('0')
+    })
+  })
+
+  describe('サムネイル', () => {
+    /**
+     * ファイル名を内容に入れたサムネイルを作る ThumbnailMaker のモックを作る。
+     * @returns ThumbnailMaker のモック
+     */
+    const createMaker = () => vi.fn<ThumbnailMaker>(async (file) => (
+      new Blob([`thumbnail:${file.name}`], { type: 'image/webp' })
+    ))
+
+    /**
+     * 作ったサムネイルの元になった原本のファイル名を取得する。
+     * @param maker ThumbnailMaker のモック
+     * @returns ファイル名の配列（順不同のため並べ替える）
+     */
+    const madeFrom = (maker: ReturnType<typeof createMaker>) => maker.mock.calls.map(([file]) => file.name).sort()
+
+    /**
+     * 一覧に表示しているサムネイルの画像の数を数える。
+     * @param container 描画先の要素
+     * @returns 画像の数
+     */
+    const cardImages = (container: HTMLElement) => container.querySelectorAll('.photo-card img').length
+
+    /**
+     * フォルダを開いてサムネイルを作り、保存し終えたら画面を閉じる。
+     * @param memory メモリ上のフォルダ
+     * @returns 最初の画面で使った ThumbnailMaker のモック
+     */
+    const cacheThumbnails = async (memory: ReturnType<typeof createPicturesSource>) => {
+      const maker = createMaker()
+      memory.queuePick('pictures')
+      const first = await setup(memory.source, undefined, maker)
+      await openFolder(first.user)
+      await waitFor(() => expect(cardImages(first.container)).toBe(3))
+      await waitFor(async () => {
+        const db = await openDB(DB_NAME)
+        const count = await db.count('thumbnails')
+        db.close()
+        expect(count).toBe(3)
+      })
+      first.unmount()
+      return maker
+    }
+
+    it('サムネイルを作って一覧に表示し、保存する', async () => {
+      const memory = createPicturesSource()
+
+      const maker = await cacheThumbnails(memory)
+
+      expect(madeFrom(maker)).toEqual(['morning.jpg', 'trip/station.png', 'window.webp'])
+      const shown = vi.mocked(URL.createObjectURL).mock.calls.map(([blob]) => blob)
+      const thumbnails = shown.filter((blob): blob is Blob => blob instanceof Blob && !(blob instanceof File))
+      expect(thumbnails.map((blob) => blob.type)).toEqual(Array(3).fill('image/webp'))
+    })
+
+    it('開き直すと保存済みのサムネイルを使い、作り直さない', async () => {
+      const memory = createPicturesSource()
+      await cacheThumbnails(memory)
+      const maker = createMaker()
+
+      const { container } = await setup(memory.source, undefined, maker)
+
+      await waitFor(() => expect(cardImages(container)).toBe(3))
+      expect(maker).not.toHaveBeenCalled()
+    })
+
+    it('原本が変わっていたら作り直す', async () => {
+      const memory = createPicturesSource()
+      await cacheThumbnails(memory)
+      memory.folder('pictures').files.set('morning.jpg', { lastModified: october(20), content: 'edited' })
+      const maker = createMaker()
+
+      const { container } = await setup(memory.source, undefined, maker)
+
+      await waitFor(() => expect(cardImages(container)).toBe(3))
+      expect(madeFrom(maker)).toEqual(['morning.jpg'])
+    })
+
+    it('壊れた保存済みのサムネイルは作り直す', async () => {
+      const memory = createPicturesSource()
+      await cacheThumbnails(memory)
+      const db = await openDB(DB_NAME)
+      const photos = await db.getAll('photos') as Array<{ id: string; relativePath: string }>
+      const morning = photos.find((photo) => photo.relativePath === 'morning.jpg')!
+      await db.put('thumbnails', { photoId: morning.id, bytes: 'broken' })
+      db.close()
+      const maker = createMaker()
+
+      const { container } = await setup(memory.source, undefined, maker)
+
+      await waitFor(() => expect(cardImages(container)).toBe(3))
+      expect(madeFrom(maker)).toEqual(['morning.jpg'])
+    })
+
+    it('アクセス許可がなくても、保存済みのサムネイルを表示する', async () => {
+      const memory = createPicturesSource()
+      await cacheThumbnails(memory)
+      memory.folder('pictures').permission = 'prompt'
+      const maker = createMaker()
+
+      const { container } = await setup(memory.source, undefined, maker)
+
+      await waitFor(() => expect(cardImages(container)).toBe(3))
+      const badges = container.querySelectorAll('.photo-card .thumbnail-state.badge')
+      expect(Array.from(badges, (badge) => badge.textContent)).toEqual(Array(3).fill('アクセス許可が必要'))
+      expect(maker).not.toHaveBeenCalled()
+      await waitFor(() => expect(container.querySelector('.inspector img')).not.toBeNull())
+      expect(container.querySelector('.inspector .thumbnail-state.badge')).toHaveTextContent('アクセス許可が必要')
+    })
+
+    it('ファイルが見つからなくなっても、保存済みのサムネイルを表示する', async () => {
+      const memory = createPicturesSource()
+      await cacheThumbnails(memory)
+      memory.folder('pictures').files.delete('window.webp')
+
+      const { user, container } = await setup(memory.source, undefined, createMaker())
+
+      await waitFor(() => expect(within(nav()).getByRole('button', { name: /再接続が必要/ })).toHaveTextContent('1'))
+      const card = screen.getByRole('button', { name: /window\.webp/ })
+      await waitFor(() => expect(card.querySelector('img')).not.toBeNull())
+      expect(card.querySelector('.thumbnail-state.badge')).toHaveTextContent('見つかりません')
+
+      await user.click(card)
+
+      await waitFor(() => expect(container.querySelector('.inspector img')).not.toBeNull())
+      expect(container.querySelector('.inspector .thumbnail-state.badge')).toHaveTextContent('見つかりません')
+      expect(within(container.querySelector('.inspector')!).getByText('サイズ').nextSibling).toHaveTextContent('—')
+    })
+
+    it('サムネイルを作れなければ原本を表示する', async () => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const maker = vi.fn<ThumbnailMaker>().mockResolvedValue(null).mockRejectedValueOnce(new Error('壊れた画像'))
+      const { user, container } = await setup(memory.source, undefined, maker)
+
+      await openFolder(user)
+
+      await waitFor(() => expect(cardImages(container)).toBe(3))
+      expect(maker).toHaveBeenCalledTimes(3)
+      const shown = vi.mocked(URL.createObjectURL).mock.calls.map(([blob]) => blob)
+      expect(shown.every((blob) => blob instanceof File)).toBe(true)
+      const db = await openDB(DB_NAME)
+      expect(await db.count('thumbnails')).toBe(0)
+      db.close()
+    })
+
+    it('サムネイルを保存できなくても表示する', async () => {
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      /**
+       * サムネイルの保存だけが失敗する保存先を開く。
+       * @returns 保存先
+       */
+      const openStore = async (): Promise<LibraryStore> => ({
+        ...await openLibraryStore(),
+        putThumbnail: () => Promise.reject(new DOMException('容量不足', 'QuotaExceededError')),
+      })
+      const { user, container } = await setup(memory.source, openStore, createMaker())
+
+      await openFolder(user)
+
+      await waitFor(() => expect(cardImages(container)).toBe(3))
+      expect(container.querySelector('.photo-card .thumbnail-state')).toBeNull()
     })
   })
 
