@@ -89,12 +89,25 @@ const hostWith = (pick: () => Promise<unknown>) => ({ showDirectoryPicker: pick 
 
 describe('createFileSystemAccessSource', () => {
   it('showDirectoryPicker がなければ非対応になる', async () => {
-    const source = createFileSystemAccessSource({})
+    const source = createFileSystemAccessSource({ isSecureContext: true })
 
-    expect(source.supported).toBe(false)
+    expect(source.support).toBe('unsupported-browser')
     expect(await source.pickFolder()).toEqual({
       status: 'failed', message: expect.stringContaining('対応していません'),
     })
+  })
+
+  it('安全でない接続で showDirectoryPicker がなければ、接続を理由にする', async () => {
+    const source = createFileSystemAccessSource({ isSecureContext: false })
+
+    expect(source.support).toBe('insecure-context')
+    expect(await source.pickFolder()).toEqual({
+      status: 'failed', message: expect.stringContaining('安全な接続'),
+    })
+  })
+
+  it('showDirectoryPicker があれば対応している', () => {
+    expect(createFileSystemAccessSource(hostWith(async () => undefined)).support).toBe('supported')
   })
 
   describe('pickFolder', () => {

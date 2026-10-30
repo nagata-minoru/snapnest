@@ -168,14 +168,24 @@ describe('App', () => {
       expect(await firstLocation(second.user)).toBe('Archive')
     })
 
-    it('非対応ブラウザでは案内を表示する', async () => {
-      const { user } = await setup(createUnsupportedSource())
+    it('非対応ブラウザでは案内を表示し、フォルダを開くボタンを押せなくする', async () => {
+      await setup(createUnsupportedSource())
 
       expect(screen.getByRole('alert')).toHaveTextContent('このブラウザはフォルダの参照に対応していません。')
+      expect(screen.getByRole('alert')).toHaveTextContent('パソコン版の Chrome で開いてください。')
+      expect(screen.getByRole('heading', { name: 'このブラウザではフォルダを開けません' })).toBeInTheDocument()
+      const buttons = screen.getAllByRole('button', { name: /フォルダを開く/ })
+      expect(buttons).toHaveLength(1)
+      expect(buttons[0]).toBeDisabled()
+    })
 
-      await user.click(screen.getAllByRole('button', { name: /フォルダを開く/ })[0])
+    it('安全でない接続で開いたときは、https か localhost で開くよう案内する', async () => {
+      await setup(createUnsupportedSource('insecure-context'))
 
-      expect(screen.getByRole('status')).toHaveTextContent('Chrome で開いてください。')
+      expect(screen.getByRole('alert')).toHaveTextContent('安全な接続で開かれていないため')
+      expect(screen.getByRole('alert')).toHaveTextContent('http://localhost で開いてください。')
+      expect(screen.getByRole('heading', { name: 'このアドレスではフォルダを開けません' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /フォルダを開く/ })).toBeDisabled()
     })
 
     it('読み込みが途中で失敗したら、見つかった分だけ残して通知する', async () => {
@@ -639,6 +649,7 @@ describe('App', () => {
   describe('コレクション', () => {
     /**
      * サイドバーでコレクションを作る。
+     * 保存し終えて入力欄が閉じるか、使えない名前として入力欄に誤りが示されるまで待つ。
      * @param user 操作用の userEvent
      * @param name コレクション名
      */
@@ -646,6 +657,10 @@ describe('App', () => {
       await user.click(screen.getByRole('button', { name: 'コレクションを作る' }))
       await user.type(screen.getByRole('textbox', { name: 'コレクション名' }), name)
       await user.click(screen.getByRole('button', { name: '作成' }))
+      await waitFor(() => {
+        const input = screen.queryByRole('textbox', { name: 'コレクション名' })
+        expect(input === null || input.getAttribute('aria-invalid') === 'true').toBe(true)
+      })
     }
 
     /**
@@ -775,7 +790,8 @@ describe('App', () => {
       await user.type(input, '旅行')
       await user.click(screen.getByRole('button', { name: '変更' }))
 
-      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('旅行')
+      // 名前は保存し終えてから画面に反映されるため、反映を待つ
+      await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('旅行'))
       expect(screen.queryByRole('textbox', { name: '新しいコレクション名' })).not.toBeInTheDocument()
       expect(within(nav()).getByRole('button', { name: /旅行/ })).toHaveAttribute('aria-current', 'page')
     })

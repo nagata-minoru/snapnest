@@ -1,5 +1,7 @@
-import type { AccessPermission, FileRef, FolderRef, PhotoSource, ReadResult, ScannedFile } from './photoSource'
-import { isImageFileName } from './photoSource'
+import type {
+  AccessPermission, FileRef, FolderRef, PhotoSource, ReadResult, ScannedFile, SourceSupport,
+} from './photoSource'
+import { isImageFileName, unsupportedMessage } from './photoSource'
 
 // TypeScript の DOM 型定義にない File System Access API の部分だけを最小限に定義する。
 
@@ -19,9 +21,10 @@ type DirectoryHandle = PermissionMethods & {
   values(): AsyncIterable<FileHandle | DirectoryHandle>
 }
 
-/** File System Access API のうち、このアダプターが使う大域関数。 */
+/** File System Access API のうち、このアダプターが使う大域関数と、安全な接続で開かれているか。 */
 export type DirectoryPickerHost = {
   showDirectoryPicker?: (options: { id: string; mode: 'read' }) => Promise<DirectoryHandle>
+  readonly isSecureContext?: boolean
 }
 
 /**
@@ -101,17 +104,30 @@ async function* walk(directory: DirectoryHandle, prefix: string): AsyncGenerator
 }
 
 /**
+ * フォルダを参照できるか判定する。
+ * API は安全な接続でしか使えないため、API がなく安全な接続でもなければ、接続を理由にする。
+ * @param host 判定する大域オブジェクト
+ * @returns フォルダを参照できるか。できなければその理由
+ */
+const supportOf = (host: DirectoryPickerHost): SourceSupport => {
+  if (typeof host.showDirectoryPicker === 'function') return 'supported'
+  if (host.isSecureContext === false) return 'insecure-context'
+  return 'unsupported-browser'
+}
+
+/**
  * File System Access API を使う PhotoSource を作る。
- * `showDirectoryPicker` がなければ非対応（`supported` が `false`）として振る舞う。
+ * `showDirectoryPicker` がなければ非対応（`support` が `supported` 以外）として振る舞う。
  * @param host `showDirectoryPicker` を持つ大域オブジェクト。通常は `window`
  * @returns File System Access API による PhotoSource
  */
 export const createFileSystemAccessSource = (host: DirectoryPickerHost): PhotoSource => {
   const picker = host.showDirectoryPicker
   const mode: PermissionMode = { mode: 'read' }
+  const support = supportOf(host)
 
   return {
-    supported: typeof picker === 'function',
+    support,
 
     /**
      * 読み取り専用でフォルダを選んでもらう。
@@ -119,7 +135,8 @@ export const createFileSystemAccessSource = (host: DirectoryPickerHost): PhotoSo
      */
     pickFolder: async () => {
       if (typeof picker !== 'function') {
-        return { status: 'failed', message: 'このブラウザはフォルダの参照に対応していません。' }
+        const reason = support === 'insecure-context' ? support : 'unsupported-browser'
+        return { status: 'failed', message: unsupportedMessage(reason) }
       }
       try {
         const handle = await picker.call(host, { id: 'snapnest-library', mode: 'read' })

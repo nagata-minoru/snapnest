@@ -43,7 +43,7 @@ export const createMemorySource = () => {
   )
 
   const source: PhotoSource = {
-    supported: true,
+    support: 'supported',
 
     /**
      * 予約しておいた結果でフォルダを選ぶ。選ばれたフォルダには権限を与える。

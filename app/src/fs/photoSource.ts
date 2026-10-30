@@ -17,6 +17,28 @@ export type FileRef = { readonly [fileRefBrand]: true }
 /** フォルダへの読み取り権限の状態。 */
 export type AccessPermission = 'granted' | 'prompt' | 'denied'
 
+/**
+ * このブラウザでフォルダを参照できるか。
+ * `insecure-context` は、https や localhost 以外で開いたため API が使えない状態。
+ * `unsupported-browser` は、ブラウザが API を備えていない状態。
+ */
+export type SourceSupport = 'supported' | 'insecure-context' | 'unsupported-browser'
+
+const unsupportedMessages = {
+  'insecure-context': (
+    'このページは安全な接続で開かれていないため、フォルダを参照できません。' +
+    'https:// で始まるアドレスか http://localhost で開いてください。'
+  ),
+  'unsupported-browser': 'このブラウザはフォルダの参照に対応していません。パソコン版の Chrome で開いてください。',
+} satisfies Record<Exclude<SourceSupport, 'supported'>, string>
+
+/**
+ * フォルダを参照できない理由に応じた案内を返す。
+ * @param support フォルダを参照できない理由
+ * @returns 利用者向けの案内
+ */
+export const unsupportedMessage = (support: Exclude<SourceSupport, 'supported'>) => unsupportedMessages[support]
+
 /** フォルダ選択の結果。 */
 export type PickResult =
   | { status: 'picked'; ref: FolderRef; name: string }
@@ -48,7 +70,7 @@ export type UnavailableReason = 'not-found' | 'permission' | 'unavailable'
  */
 export interface PhotoSource {
   /** このブラウザでフォルダを参照できるか */
-  readonly supported: boolean
+  readonly support: SourceSupport
 
   /**
    * 利用者にフォルダを選んでもらう。
@@ -117,16 +139,19 @@ export const isImageFileName = (name: string) => !name.startsWith('.') && imageE
 /**
  * フォルダを参照できないブラウザ向けの PhotoSource を作る。
  * どの操作も失敗を結果として返し、例外は投げない。
+ * @param support フォルダを参照できない理由
  * @returns 非対応ブラウザ用の PhotoSource
  */
-export const createUnsupportedSource = (): PhotoSource => ({
-  supported: false,
+export const createUnsupportedSource = (
+  support: Exclude<SourceSupport, 'supported'> = 'unsupported-browser',
+): PhotoSource => ({
+  support,
 
   /**
    * フォルダを選ばせず、失敗を返す。
-   * @returns 非対応であることを伝える失敗の結果
+   * @returns 参照できない理由を伝える失敗の結果
    */
-  pickFolder: async () => ({ status: 'failed', message: 'このブラウザはフォルダの参照に対応していません。' }),
+  pickFolder: async () => ({ status: 'failed', message: unsupportedMessage(support) }),
 
   /**
    * 常に別のフォルダとみなす。
