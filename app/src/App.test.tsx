@@ -649,6 +649,7 @@ describe('App', () => {
   describe('コレクション', () => {
     /**
      * サイドバーでコレクションを作る。
+     * 保存し終えて入力欄が閉じるか、使えない名前として入力欄に誤りが示されるまで待つ。
      * @param user 操作用の userEvent
      * @param name コレクション名
      */
@@ -656,6 +657,10 @@ describe('App', () => {
       await user.click(screen.getByRole('button', { name: 'コレクションを作る' }))
       await user.type(screen.getByRole('textbox', { name: 'コレクション名' }), name)
       await user.click(screen.getByRole('button', { name: '作成' }))
+      await waitFor(() => {
+        const input = screen.queryByRole('textbox', { name: 'コレクション名' })
+        expect(input === null || input.getAttribute('aria-invalid') === 'true').toBe(true)
+      })
     }
 
     /**
@@ -785,7 +790,8 @@ describe('App', () => {
       await user.type(input, '旅行')
       await user.click(screen.getByRole('button', { name: '変更' }))
 
-      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('旅行')
+      // 名前は保存し終えてから画面に反映されるため、反映を待つ
+      await waitFor(() => expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('旅行'))
       expect(screen.queryByRole('textbox', { name: '新しいコレクション名' })).not.toBeInTheDocument()
       expect(within(nav()).getByRole('button', { name: /旅行/ })).toHaveAttribute('aria-current', 'page')
     })
