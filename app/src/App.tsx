@@ -2,7 +2,7 @@ import { useDeferredValue, useEffect, useMemo, useState, type ReactNode } from '
 import { CollectionNameForm } from './components/CollectionNameForm'
 import { Inspector } from './components/Inspector'
 import { PhotoCard } from './components/PhotoCard'
-import type { LibraryStore, PhotoRecord } from './db/libraryStore'
+import type { OpenLibraryStore, PhotoRecord } from './db/libraryStore'
 import { unsupportedMessage, type PhotoSource } from './fs/photoSource'
 import { byCollectionName, groupMemberships, matchesSearch, searchTerms } from './library/collections'
 import { formatLocation } from './library/format'
@@ -143,10 +143,12 @@ const EmptyState = ({ icon, title, children }: { icon?: string; title: string; c
  */
 export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
   source: PhotoSource
-  openStore: () => Promise<LibraryStore>
+  openStore: OpenLibraryStore
   makeThumbnail?: ThumbnailMaker
 }) => {
   const library = useLibrary(source, openStore)
+  // 接続が閉じた後は、画面に残った内容を変えても保存されない
+  const saving = library.persistent && library.storeIssue !== 'closed'
   const { folders, permissions, scan } = library
   const { support } = source
   const [view, setView] = useState<View>({ kind: 'all' })
@@ -289,7 +291,7 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
    */
   const footerStatus = () => {
     if (scan && scanningFolder) return `「${scanningFolder.name}」を読み込み中… ${scan.found} 枚`
-    if (library.persistent) return '端末内のフォルダを参照中'
+    if (saving) return '端末内のフォルダを参照中'
     return '登録内容は保存されません'
   }
 
@@ -307,6 +309,13 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
    * @returns 写真の一覧または案内の React 要素
    */
   const renderPhotos = () => {
+    if (library.status === 'loading' && library.storeIssue === 'blocked') {
+      return (
+        <EmptyState title="ほかのタブの snapnest を待っています">
+          <p>古い版の snapnest を開いたままのタブがあります。そのタブを閉じると、続きを読み込みます。</p>
+        </EmptyState>
+      )
+    }
     if (library.status === 'loading') return <EmptyState title="ライブラリを読み込み中…" />
     if (visiblePhotos.length) {
       return (
@@ -505,7 +514,7 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
         <div className="mt-auto p-2.5 pt-8 text-[11px] text-sidebar-icon">
           <p>
             <span
-              className={`mr-[7px] inline-block size-1.5 rounded-full ${library.persistent ? 'bg-leaf' : 'bg-caution'}`}
+              className={`mr-[7px] inline-block size-1.5 rounded-full ${saving ? 'bg-leaf' : 'bg-caution'}`}
             />
             {footerStatus()}
           </p>
@@ -595,6 +604,20 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
 
         {support !== 'supported' && (
           <div className={banner} role="alert">{unsupportedMessage(support)}</div>
+        )}
+        {library.storeIssue === 'closed' && (
+          <div className={banner} role="alert">
+            <span>
+              別のタブで新しい版の snapnest を開いたなどの理由で、写真の情報を保存できなくなりました。
+              このページを再読み込みしてください。
+            </span>
+            <button
+              className="flex-none rounded-md bg-banner-ink px-2.5 py-1.5 text-[11px] font-bold text-white"
+              onClick={() => window.location.reload()}
+            >
+              再読み込み
+            </button>
+          </div>
         )}
         {view.kind === 'missing' && withCandidatesCount > 0 && (
           <div className={banner}>

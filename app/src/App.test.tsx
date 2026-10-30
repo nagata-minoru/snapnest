@@ -1,9 +1,9 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { openDB } from 'idb'
 import { describe, expect, it, vi } from 'vitest'
 import { App } from './App'
-import { DB_NAME, openLibraryStore, type LibraryStore } from './db/libraryStore'
+import { DB_NAME, openLibraryStore, type LibraryStore, type OpenLibraryStore } from './db/libraryStore'
 import { createUnsupportedSource, type PhotoSource } from './fs/photoSource'
 import { createMemorySource } from './test/memorySource'
 import type { ThumbnailMaker } from './thumbnails/thumbnailMaker'
@@ -203,6 +203,54 @@ describe('App', () => {
   })
 
   describe('保存と再起動', () => {
+    it('古い版のタブが残っていれば待っていることを伝え、閉じられたら読み込む', async () => {
+      let open = () => {}
+      /**
+       * 待たされたことを伝え、`open` が呼ばれるまで開くのを待つ。
+       * @param events 保存先の出来事を受け取る関数
+       * @returns 開いたライブラリ
+       */
+      const openStore: OpenLibraryStore = async (events) => {
+        events?.onBlocked?.()
+        await new Promise<void>((resolve) => {
+          open = resolve
+        })
+        return openLibraryStore()
+      }
+      render(<App source={createPicturesSource().source} openStore={openStore} />)
+
+      expect(await screen.findByRole('heading', { name: 'ほかのタブの snapnest を待っています' })).toBeInTheDocument()
+      act(() => open())
+
+      expect(await screen.findByRole('heading', { name: '写真のフォルダを開きましょう' })).toBeInTheDocument()
+      expect(screen.queryByText(/ほかのタブの snapnest/)).not.toBeInTheDocument()
+    })
+
+    it('別のタブが新しい版で開いて接続が閉じたら、保存できないことと再読み込みを伝える', async () => {
+      let closed = () => {}
+      /**
+       * 接続が閉じたときに呼ぶ関数を覚えておき、ライブラリを開く。
+       * @param events 保存先の出来事を受け取る関数
+       * @returns 開いたライブラリ
+       */
+      const openStore: OpenLibraryStore = async (events) => {
+        closed = () => events?.onClosed?.()
+        return openLibraryStore()
+      }
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const { user, photoTitles } = await setup(memory.source, openStore)
+      await openFolder(user)
+
+      act(() => closed())
+
+      const alert = screen.getByRole('alert')
+      expect(alert).toHaveTextContent('写真の情報を保存できなくなりました。')
+      expect(within(alert).getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
+      expect(screen.getByText('登録内容は保存されません')).toBeInTheDocument()
+      expect(photoTitles()).toEqual(['morning.jpg', 'window.webp', 'station.png'])
+    })
+
     it('開き直すと保存済みの写真を表示する', async () => {
       const memory = createPicturesSource()
       memory.queuePick('pictures')
@@ -281,6 +329,16 @@ describe('App', () => {
       await openFolder(user)
 
       expect(photoTitles()).toHaveLength(3)
+    })
+
+    it('新しい版がデータベースのバージョンを上げていたら、古い版では読めないことを伝える', async () => {
+      const memory = createPicturesSource()
+      await setup(memory.source, () => Promise.reject(new DOMException('新しい版', 'VersionError')))
+
+      expect(screen.getByRole('status')).toHaveTextContent(
+        '保存済みの写真の情報は新しい版の snapnest で更新されたため、この古い版では読めません。',
+      )
+      expect(screen.getByText('登録内容は保存されません')).toBeInTheDocument()
     })
   })
 

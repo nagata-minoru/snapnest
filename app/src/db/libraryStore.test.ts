@@ -1,9 +1,9 @@
 import { openDB } from 'idb'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { FileRef, FolderRef } from '../fs/photoSource'
 import {
-  createMemoryLibraryStore, DB_NAME, DB_VERSION, openLibraryStore, type CollectionRecord, type FolderRecord,
-  type LibraryStore, type MembershipRecord, type PhotoRecord, type ThumbnailRecord,
+  createMemoryLibraryStore, DB_NAME, DB_VERSION, isNewerVersionError, openLibraryStore, type CollectionRecord,
+  type FolderRecord, type LibraryStore, type MembershipRecord, type PhotoRecord, type ThumbnailRecord,
 } from './libraryStore'
 
 const folder: FolderRecord = {
@@ -186,6 +186,53 @@ describe.each([{
 })
 
 describe('openLibraryStore', () => {
+  it('古い版の接続が残っていれば待たされたことを伝え、閉じたら開く', async () => {
+    const old = await openDB(DB_NAME, 1, {
+      /**
+       * バージョン 1 のスキーマを作る。
+       * @param db 開いているデータベース
+       */
+      upgrade: (db) => {
+        db.createObjectStore('folders', { keyPath: 'id' })
+        db.createObjectStore('photos', { keyPath: 'id' }).createIndex('byFolder', 'folderId')
+      },
+    })
+    const onBlocked = vi.fn()
+
+    const opening = openLibraryStore({ onBlocked })
+    await vi.waitFor(() => expect(onBlocked).toHaveBeenCalled())
+    old.close()
+    const store = await opening
+
+    expect(await store.load()).toEqual({ folders: [], photos: [], collections: [], memberships: [], skipped: 0 })
+    store.close()
+  })
+
+  it('別のタブが新しい版で開こうとしたら、接続を閉じて閉じたことを伝える', async () => {
+    const onClosed = vi.fn()
+    const store = await openLibraryStore({ onClosed })
+
+    const newer = await openDB(DB_NAME, DB_VERSION + 1)
+
+    expect(onClosed).toHaveBeenCalledOnce()
+    newer.close()
+    store.close()
+  })
+
+  it('新しい版がバージョンを上げたデータベースは開けず、その理由がわかる', async () => {
+    const newer = await openDB(DB_NAME, DB_VERSION + 1)
+    newer.close()
+
+    const error: unknown = await openLibraryStore().catch((reason: unknown) => reason)
+
+    expect(isNewerVersionError(error)).toBe(true)
+  })
+
+  it('バージョン以外の理由で開けなかったときは、新しい版のためとは判定しない', () => {
+    expect(isNewerVersionError(new Error('開けない'))).toBe(false)
+    expect(isNewerVersionError(null)).toBe(false)
+  })
+
   it('バージョン 1 のデータベースを移行し、既存のフォルダと写真を残す', async () => {
     const old = await openDB(DB_NAME, 1, {
       /**
