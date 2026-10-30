@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  createMemoryLibraryStore, type CollectionRecord, type FolderRecord, type LibraryStore, type MembershipRecord,
-  type PhotoRecord, type ThumbnailCache,
+  createMemoryLibraryStore, isNewerVersionError, type CollectionRecord, type FolderRecord, type LibraryStore,
+  type MembershipRecord, type OpenLibraryStore, type PhotoRecord, type ThumbnailCache,
 } from '../db/libraryStore'
 import {
   unsupportedMessage, type AccessPermission, type FolderRef, type PhotoSource, type UnavailableReason,
@@ -13,6 +13,12 @@ import { ScanError, scanFolder } from './scanFolder'
 /** ライブラリの読み込み状態 */
 export type LibraryStatus = 'loading' | 'ready'
 
+/**
+ * 保存先との接続の問題。`blocked` は別のタブに残った古い接続が閉じるのを待っている状態、
+ * `closed` は別のタブが新しい版で開いたなどの理由で接続が閉じ、保存できなくなった状態
+ */
+export type StoreIssue = 'blocked' | 'closed'
+
 /** 読み込み中のフォルダと、それまでに見つけた写真の数 */
 export type ScanProgress = { folderId: string; found: number }
 
@@ -21,6 +27,8 @@ export type Library = {
   status: LibraryStatus
   /** メタデータを IndexedDB に保存できているか */
   persistent: boolean
+  /** 保存先との接続の問題。なければ `null` */
+  storeIssue: StoreIssue | null
   folders: FolderRecord[]
   photos: PhotoRecord[]
   collections: CollectionRecord[]
@@ -85,9 +93,10 @@ const requestPersistence = () => {
  * @param openStore メタデータの保存先を開く関数
  * @returns ライブラリの状態と操作
  */
-export const useLibrary = (source: PhotoSource, openStore: () => Promise<LibraryStore>): Library => {
+export const useLibrary = (source: PhotoSource, openStore: OpenLibraryStore): Library => {
   const [status, setStatus] = useState<LibraryStatus>('loading')
   const [persistent, setPersistent] = useState(true)
+  const [storeIssue, setStoreIssue] = useState<StoreIssue | null>(null)
   const [folders, setFolders] = useState<FolderRecord[]>([])
   const [photos, setPhotos] = useState<PhotoRecord[]>([])
   const [collections, setCollections] = useState<CollectionRecord[]>([])
@@ -107,12 +116,32 @@ export const useLibrary = (source: PhotoSource, openStore: () => Promise<Library
     const start = async () => {
       let store: LibraryStore
       try {
-        store = await openStore()
-      } catch {
+        store = await openStore({
+          /** 待たされていることを画面に出す。 */
+          onBlocked: () => {
+            if (!cancelled) setStoreIssue('blocked')
+          },
+
+          /** 閉じた接続を使わないよう手放し、保存できなくなったことを画面に出す。 */
+          onClosed: () => {
+            if (cancelled) return
+            storeRef.current = null
+            setStoreIssue('closed')
+          },
+        })
+        if (!cancelled) setStoreIssue(null)
+      } catch (error) {
         store = createMemoryLibraryStore()
         if (!cancelled) {
           setPersistent(false)
-          setNotice('写真の情報を保存する領域を開けませんでした。このページを閉じると登録内容は失われます。')
+          if (isNewerVersionError(error)) {
+            setNotice(
+              '保存済みの写真の情報は新しい版の snapnest で更新されたため、この古い版では読めません。' +
+              'ページを再読み込みして新しい版を開いてください。このページを閉じると登録内容は失われます。',
+            )
+          } else {
+            setNotice('写真の情報を保存する領域を開けませんでした。このページを閉じると登録内容は失われます。')
+          }
         }
       }
       opened = store
@@ -483,7 +512,7 @@ export const useLibrary = (source: PhotoSource, openStore: () => Promise<Library
   }), [])
 
   return {
-    status, persistent, folders, photos, collections, memberships, permissions, scan, notice, thumbnails,
+    status, persistent, storeIssue, folders, photos, collections, memberships, permissions, scan, notice, thumbnails,
     addFolder, rescan, requestAccess, reportUnavailable,
     createCollection, renameCollection, deleteCollection, addToCollection, removeFromCollection,
     reconnectPhoto, removePhoto, dismissNotice,

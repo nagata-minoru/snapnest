@@ -457,12 +457,32 @@ export const createMemoryLibraryStore = (): LibraryStore => {
   }
 }
 
+/** 保存先を開くときと、開いた後に起きる出来事を受け取る関数。 */
+export type StoreEvents = {
+  /** 別のタブに古い版の接続が残っていて、開くのを待たされている */
+  onBlocked?: () => void
+  /** 別のタブが新しい版で開こうとしたか、ブラウザが接続を切ったため、接続が閉じた */
+  onClosed?: () => void
+}
+
+/** メタデータの保存先を開く関数。 */
+export type OpenLibraryStore = (events?: StoreEvents) => Promise<LibraryStore>
+
+/**
+ * 保存先を開けなかった理由が、新しい版のアプリがデータベースのバージョンを上げたためか判定する。
+ * ブラウザによって例外のクラスが異なるため、名前で判定する。
+ * @param error 開くときに起きた例外
+ * @returns 保存先がこの版より新しいため開けなかったなら `true`
+ */
+export const isNewerVersionError = (error: unknown) => isObject(error) && error.name === 'VersionError'
+
 /**
  * IndexedDB のライブラリを開く。
+ * @param events 開くのを待たされたときや、接続が閉じたときに呼ばれる関数
  * @param name データベース名。テストで分けるときに指定する
  * @returns 開いたライブラリ
  */
-export const openLibraryStore = async (name = DB_NAME): Promise<LibraryStore> => {
+export const openLibraryStore = async (events: StoreEvents = {}, name = DB_NAME): Promise<LibraryStore> => {
   const db = await openDB<LibrarySchema>(name, DB_VERSION, {
     /**
      * 新規作成やバージョンが上がったときにスキーマを作成・移行する。
@@ -471,10 +491,19 @@ export const openLibraryStore = async (name = DB_NAME): Promise<LibraryStore> =>
      */
     upgrade: (database, oldVersion) => upgrade(database, oldVersion),
 
+    /** 別のタブに残った接続が閉じるまで、開くのを待たされていることを伝える。 */
+    blocked: () => events.onBlocked?.(),
+
     /**
-     * 別のタブが新しいバージョンで開こうとしたら、移行を妨げないよう接続を閉じる。
+     * 別のタブが新しいバージョンで開こうとしたら、移行を妨げないよう接続を閉じて、閉じたことを伝える。
      */
-    blocking: () => db.close(),
+    blocking: () => {
+      db.close()
+      events.onClosed?.()
+    },
+
+    /** ブラウザが接続を切ったことを伝える。 */
+    terminated: () => events.onClosed?.(),
   })
 
   return {
