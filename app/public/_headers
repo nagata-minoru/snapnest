@@ -1,0 +1,5 @@
+# Cloudflare Pages がすべての応答に付けるヘッダー。
+# CSP で、読み込み・通信できる相手を自分のサイトと Google Fonts だけに絞る。
+# 写真の原本やサムネイルは blob: の URL で表示するため、画像だけ blob: を許可する。
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self'; worker-src 'self'; connect-src 'self'; img-src 'self' blob:; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
