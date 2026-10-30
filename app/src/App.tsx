@@ -3,7 +3,7 @@ import { CollectionNameForm } from './components/CollectionNameForm'
 import { Inspector } from './components/Inspector'
 import { PhotoCard } from './components/PhotoCard'
 import type { LibraryStore, PhotoRecord } from './db/libraryStore'
-import type { PhotoSource } from './fs/photoSource'
+import { unsupportedMessage, type PhotoSource } from './fs/photoSource'
 import { byCollectionName, groupMemberships, matchesSearch, searchTerms } from './library/collections'
 import { formatLocation } from './library/format'
 import { findReconnectCandidates, type ReconnectCandidate } from './library/reconnect'
@@ -148,6 +148,7 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
 }) => {
   const library = useLibrary(source, openStore)
   const { folders, permissions, scan } = library
+  const { support } = source
   const [view, setView] = useState<View>({ kind: 'all' })
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [query, setQuery] = useState('')
@@ -326,6 +327,10 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
         </div>
       )
     }
+    if (folders.length === 0 && support !== 'supported') {
+      const where = support === 'insecure-context' ? 'このアドレス' : 'このブラウザ'
+      return <EmptyState icon="▣" title={`${where}ではフォルダを開けません`} />
+    }
     if (folders.length === 0) {
       return (
         <EmptyState icon="▣" title="写真のフォルダを開きましょう">
@@ -420,7 +425,7 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
         </div>
         <button
           className={`${folderButton} mt-7 w-full`}
-          disabled={library.status !== 'ready' || !!scan}
+          disabled={library.status !== 'ready' || !!scan || support !== 'supported'}
           onClick={library.addFolder}
         >
           <span>＋</span> フォルダを開く
@@ -588,10 +593,8 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
           </div>
         )}
 
-        {!source.supported && (
-          <div className={banner} role="alert">
-            このブラウザはフォルダの参照に対応していません。snapnest は現在 Chrome を対象にしています。
-          </div>
+        {support !== 'supported' && (
+          <div className={banner} role="alert">{unsupportedMessage(support)}</div>
         )}
         {view.kind === 'missing' && withCandidatesCount > 0 && (
           <div className={banner}>

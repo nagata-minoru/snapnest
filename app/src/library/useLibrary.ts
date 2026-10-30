@@ -3,7 +3,9 @@ import {
   createMemoryLibraryStore, type CollectionRecord, type FolderRecord, type LibraryStore, type MembershipRecord,
   type PhotoRecord, type ThumbnailCache,
 } from '../db/libraryStore'
-import type { AccessPermission, FolderRef, PhotoSource, UnavailableReason } from '../fs/photoSource'
+import {
+  unsupportedMessage, type AccessPermission, type FolderRef, type PhotoSource, type UnavailableReason,
+} from '../fs/photoSource'
 import { validateCollectionName } from './collections'
 import { formatLocation } from './format'
 import { ScanError, scanFolder } from './scanFolder'
@@ -196,8 +198,8 @@ export const useLibrary = (source: PhotoSource, openStore: () => Promise<Library
    */
   const addFolder = useCallback(async () => {
     if (latest.current.scanning || !storeRef.current) return
-    if (!source.supported) {
-      setNotice('このブラウザはフォルダの参照に対応していません。Chrome で開いてください。')
+    if (source.support !== 'supported') {
+      setNotice(unsupportedMessage(source.support))
       return
     }
     const result = await source.pickFolder()
