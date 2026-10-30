@@ -28,7 +28,7 @@ export const useCollectionActions = (context: LibraryContext) => {
     )
     if (!saved) return null
     context.setCollections((current) => [...current, collection])
-    requestPersistence()
+    requestPersistence(context)
     return collection
   }, [context])
 

@@ -100,7 +100,7 @@ export const useFolderActions = (context: LibraryContext) => {
       same ? current.map((item) => item.id === folder.id ? folder : item) : [...current, folder]
     ))
     context.setPermissions((current) => ({ ...current, [folder.id]: 'granted' }))
-    requestPersistence()
+    requestPersistence(context)
     await runScan(folder)
   }, [context, findSameFolder, runScan])
 
