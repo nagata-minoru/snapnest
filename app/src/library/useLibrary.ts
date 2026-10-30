@@ -19,6 +19,8 @@ export type Library = {
   persistent: boolean
   /** 保存先との接続の問題。なければ `null` */
   storeIssue: StoreIssue | null
+  /** ブラウザが、容量不足のときにも保存領域を消さずに保つと約束しているか */
+  storagePersisted: boolean
   folders: FolderRecord[]
   photos: PhotoRecord[]
   collections: CollectionRecord[]
@@ -62,6 +64,7 @@ export const useLibrary = (source: PhotoSource, openStore: OpenLibraryStore): Li
   const [permissions, setPermissions] = useState<Record<string, AccessPermission>>({})
   const [scan, setScan] = useState<ScanProgress | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [storagePersisted, setStoragePersisted] = useState(false)
   const storeRef = useRef<LibraryStore | null>(null)
   const latest = useRef({ folders, photos, collections, memberships, scanning: false })
   latest.current = { folders, photos, collections, memberships, scanning: scan !== null }
@@ -69,7 +72,7 @@ export const useLibrary = (source: PhotoSource, openStore: OpenLibraryStore): Li
   // 状態を更新する関数と ref は描画をまたいで変わらないため、source が変わったときだけ作り直す
   const context = useMemo<LibraryContext>(() => ({
     source, storeRef, latest,
-    setFolders, setPhotos, setCollections, setMemberships, setPermissions, setScan, setNotice,
+    setFolders, setPhotos, setCollections, setMemberships, setPermissions, setScan, setNotice, setStoragePersisted,
   }), [source])
 
   const { status, persistent, storeIssue } = useLoadLibrary(context, openStore)
@@ -101,7 +104,8 @@ export const useLibrary = (source: PhotoSource, openStore: OpenLibraryStore): Li
   }), [])
 
   return {
-    status, persistent, storeIssue, folders, photos, collections, memberships, permissions, scan, notice, thumbnails,
+    status, persistent, storeIssue, storagePersisted, folders, photos, collections, memberships, permissions, scan,
+    notice, thumbnails,
     addFolder, rescan, requestAccess, reportUnavailable,
     createCollection, renameCollection, deleteCollection, addToCollection, removeFromCollection,
     reconnectPhoto, removePhoto, dismissNotice,

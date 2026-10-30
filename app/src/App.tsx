@@ -149,6 +149,8 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
   const library = useLibrary(source, openStore)
   // 接続が閉じた後は、画面に残った内容を変えても保存されない
   const saving = library.persistent && library.storeIssue !== 'closed'
+  // ブラウザが保持を約束していなければ、容量不足のときに保存した情報が消されることがある
+  const evictionWarning = '端末の空き容量が少なくなったときも、ブラウザが自動で消すことがあります。'
   const { folders, permissions, scan } = library
   const { support } = source
   const [view, setView] = useState<View>({ kind: 'all' })
@@ -520,7 +522,9 @@ export const App = ({ source, openStore, makeThumbnail = noThumbnail }: {
           </p>
           <p className="mt-2 text-[9px] leading-relaxed text-sidebar-dim">
             ブラウザのサイトデータを削除したりシークレットモードで開いたりすると、
-            登録したフォルダや写真の情報、サムネイルは失われます。写真の原本は消えません。
+            登録したフォルダや写真の情報、サムネイルは失われます。
+            {saving && !library.storagePersisted && evictionWarning}
+            写真の原本は消えません。
           </p>
         </div>
       </aside>

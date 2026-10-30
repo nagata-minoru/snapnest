@@ -6,6 +6,7 @@ import { App } from './App'
 import { DB_NAME, openLibraryStore, type LibraryStore, type OpenLibraryStore } from './db/libraryStore'
 import { createUnsupportedSource, type PhotoSource } from './fs/photoSource'
 import { createMemorySource } from './test/memorySource'
+import { stubStorage } from './test/storage'
 import type { ThumbnailMaker } from './thumbnails/thumbnailMaker'
 
 /**
@@ -249,6 +250,45 @@ describe('App', () => {
       expect(within(alert).getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
       expect(screen.getByText('登録内容は保存されません')).toBeInTheDocument()
       expect(photoTitles()).toEqual(['morning.jpg', 'window.webp', 'station.png'])
+    })
+
+    it('ブラウザが保存領域の保持を約束していなければ、容量不足で消えることがあると伝える', async () => {
+      await setup(createPicturesSource().source)
+
+      expect(screen.getByText(/空き容量が少なくなったときも/)).toBeInTheDocument()
+    })
+
+    it('ブラウザが保存領域の保持を約束していれば、容量不足の注意を出さない', async () => {
+      stubStorage({ persisted: async () => true })
+      await setup(createPicturesSource().source)
+
+      await waitFor(() => expect(screen.queryByText(/空き容量が少なくなったときも/)).not.toBeInTheDocument())
+      expect(screen.getByText(/サイトデータを削除/)).toBeInTheDocument()
+    })
+
+    it('フォルダを開くと保存領域の保持を頼み、認められたら容量不足の注意を消す', async () => {
+      const persist = vi.fn(async () => true)
+      stubStorage({ persisted: async () => false, persist })
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const { user } = await setup(memory.source)
+      expect(screen.getByText(/空き容量が少なくなったときも/)).toBeInTheDocument()
+
+      await openFolder(user)
+
+      expect(persist).toHaveBeenCalled()
+      expect(screen.queryByText(/空き容量が少なくなったときも/)).not.toBeInTheDocument()
+    })
+
+    it('保存領域の保持が認められなければ、容量不足の注意を出したままにする', async () => {
+      stubStorage({ persisted: async () => false, persist: async () => false })
+      const memory = createPicturesSource()
+      memory.queuePick('pictures')
+      const { user } = await setup(memory.source)
+
+      await openFolder(user)
+
+      expect(screen.getByText(/空き容量が少なくなったときも/)).toBeInTheDocument()
     })
 
     it('開き直すと保存済みの写真を表示する', async () => {

@@ -2,6 +2,7 @@ import type { Dispatch, RefObject, SetStateAction } from 'react'
 import type {
   CollectionRecord, FolderRecord, LibraryStore, MembershipRecord, PhotoRecord,
 } from '../db/libraryStore'
+import { requestStoragePersistence } from '../db/storagePersistence'
 import type { AccessPermission, PhotoSource } from '../fs/photoSource'
 
 /** 読み込み中のフォルダと、それまでに見つけた写真の数 */
@@ -31,6 +32,7 @@ export type LibraryContext = {
   setPermissions: Dispatch<SetStateAction<Record<string, AccessPermission>>>
   setScan: Dispatch<SetStateAction<ScanProgress | null>>
   setNotice: Dispatch<SetStateAction<string | null>>
+  setStoragePersisted: Dispatch<SetStateAction<boolean>>
 }
 
 /**
@@ -67,8 +69,9 @@ export const mergePhotos = (current: PhotoRecord[], updates: PhotoRecord[]) => {
 }
 
 /**
- * ブラウザに保存領域を消さないよう求める。失敗しても何もしない。
+ * ブラウザに保存領域を消さないよう頼み、その結果を状態に反映する。
+ * @param context 状態を読み書きする手段
  */
-export const requestPersistence = () => {
-  navigator.storage?.persist?.().catch(() => {})
+export const requestPersistence = (context: LibraryContext) => {
+  requestStoragePersistence().then(context.setStoragePersisted)
 }

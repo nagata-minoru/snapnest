@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import {
   createMemoryLibraryStore, isNewerVersionError, type LibraryStore, type OpenLibraryStore,
 } from '../db/libraryStore'
+import { isStoragePersisted } from '../db/storagePersistence'
 import type { LibraryContext } from './libraryContext'
 
 /** ライブラリの読み込み状態 */
@@ -106,6 +107,9 @@ export const useLoadLibrary = (context: LibraryContext, openStore: OpenLibrarySt
         return
       }
       storeRef.current = store
+      isStoragePersisted().then((persisted) => {
+        if (!cancelled) context.setStoragePersisted(persisted)
+      })
       await load(store)
       if (!cancelled) setStatus('ready')
     }
